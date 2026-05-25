@@ -83,7 +83,11 @@ app.use((req, res, next) => {
 
 // ── Health (no auth, no rate limit) ────────────────────────────────────────
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', uptime: process.uptime() })
+  // server_ip di sini supaya bisa diambil frontend tanpa auth
+  const { execFileSync } = require('child_process')
+  let serverIp = ''
+  try { serverIp = execFileSync('hostname', ['-I'], { encoding: 'utf8' }).trim().split(/\s+/)[0] || '' } catch {}
+  res.json({ status: 'ok', uptime: process.uptime(), server_ip: serverIp })
 })
 
 // ── Static frontend (HARUS sebelum CSRF & threat guard) ───────────────────

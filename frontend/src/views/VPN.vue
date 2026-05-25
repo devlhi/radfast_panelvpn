@@ -548,7 +548,8 @@ const tabs = computed(() => [
 
 async function fetchAll() {
   // allSettled: satu request gagal tidak menghalangi yang lain
-  const [statusRes, l2tpRes, l2tpCfgRes, wgRes, wgCfgRes, instRes] = await Promise.allSettled([
+  const [healthRes, statusRes, l2tpRes, l2tpCfgRes, wgRes, wgCfgRes, instRes] = await Promise.allSettled([
+    axios.get('/api/health'),           // no auth — untuk server_ip
     axios.get('/api/vpn/status'),
     axios.get('/api/vpn/l2tp/users'),
     axios.get('/api/vpn/l2tp/config'),
@@ -556,12 +557,16 @@ async function fetchAll() {
     axios.get('/api/vpn/wireguard/config'),
     axios.get('/api/instances'),
   ])
-  if (statusRes.status  === 'fulfilled') status.value       = statusRes.value.data
+  // server_ip dari health (no auth), sisanya dari status
+  if (healthRes.status  === 'fulfilled') status.value.server_ip = healthRes.value.data.server_ip
+  if (statusRes.status  === 'fulfilled') {
+    status.value = { ...statusRes.value.data, server_ip: status.value.server_ip || statusRes.value.data.server_ip }
+  }
   if (l2tpRes.status    === 'fulfilled') l2tpUsers.value    = l2tpRes.value.data
   if (l2tpCfgRes.status === 'fulfilled') l2tpConfig.value   = l2tpCfgRes.value.data
   if (wgRes.status      === 'fulfilled') wgPeers.value      = wgRes.value.data
   if (wgCfgRes.status   === 'fulfilled') wgConfig.value     = wgCfgRes.value.data
-  if (instRes.status    === 'fulfilled') instanceList.value = instRes.value.data
+  if (instRes.status    === 'fulfilled') instanceList.value  = instRes.value.data
 
   loadingL2tp.value = false
   loadingWg.value   = false

@@ -206,16 +206,17 @@
                 <th>VPN IP</th>
                 <th>Public Key</th>
                 <th>Instance</th>
+                <th>Speed Limit</th>
                 <th>Status</th>
                 <th style="text-align:right">Actions</th>
               </tr>
             </thead>
             <tbody>
               <tr v-if="loadingWg">
-                <td colspan="6"><div class="rf-empty"><div class="rf-spinner"></div><span>Memuat peers…</span></div></td>
+                <td colspan="7"><div class="rf-empty"><div class="rf-spinner"></div><span>Memuat peers…</span></div></td>
               </tr>
               <tr v-else-if="wgPeers.length === 0">
-                <td colspan="6">
+                <td colspan="7">
                   <div class="rf-empty">
                     <div class="rf-empty-ic">
                       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
@@ -245,6 +246,13 @@
                   <span v-else class="rf-cell-sub">—</span>
                 </td>
                 <td>
+                  <div v-if="peer.rate_down || peer.rate_up" class="rf-speed-badge">
+                    <span class="rf-speed-dn" title="Download limit">↓{{ peer.rate_down || '∞' }}M</span>
+                    <span class="rf-speed-up" title="Upload limit">↑{{ peer.rate_up || '∞' }}M</span>
+                  </div>
+                  <span v-else class="rf-cell-sub">Unlimited</span>
+                </td>
+                <td>
                   <span class="badge" :class="peer.connected ? 'badge-success' : 'badge-muted'">
                     <span class="dot" :class="peer.connected ? 'dot-success' : 'dot-muted'"></span>
                     {{ peer.connected ? 'Connected' : 'Idle' }}
@@ -255,6 +263,10 @@
                     <button class="rf-act rf-act-warning" @click="showMikrotikConfig('wg', peer.name)">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
                       ROS Config
+                    </button>
+                    <button class="rf-act rf-act-info" @click="openLimitModal(peer)" title="Set Speed Limit">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/><circle cx="12" cy="12" r="4"/></svg>
+                      Limit
                     </button>
                     <button class="rf-act rf-act-danger" @click="deleteWgPeer(peer.name)">
                       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>
@@ -458,6 +470,72 @@
       </div>
     </Transition>
 
+    <!-- ═══ Modal: Set Speed Limit ═══ -->
+    <Transition name="modal">
+      <div v-if="openLimitWg" class="rf-modal" @click.self="openLimitWg = false">
+        <div class="modal-box rf-modal-card" style="max-width:420px">
+          <header class="rf-modal-head">
+            <div class="rf-modal-head-left">
+              <span class="rf-modal-icon" style="background:var(--info-soft);color:var(--info)">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4"/><circle cx="12" cy="12" r="4"/></svg>
+              </span>
+              <div>
+                <h3>Speed Limit — {{ limitForm.name }}</h3>
+                <p>Limit bandwidth via tc HTB · 0 = unlimited</p>
+              </div>
+            </div>
+            <button @click="openLimitWg = false" class="rf-modal-close">×</button>
+          </header>
+          <div class="rf-modal-body">
+            <div class="rf-info-box">
+              <div>VPN IP: <code>{{ limitForm.peer_ip }}</code></div>
+              <div style="color:var(--text-muted);font-size:12px">Limit diterapkan real-time · 0 = hapus limit</div>
+            </div>
+            <div class="rf-form-row">
+              <div class="rf-form-field">
+                <label>
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>
+                  Download (Mbps)
+                </label>
+                <div class="rf-input-unit">
+                  <input v-model.number="limitForm.rate_down" type="number" min="0" max="10000" placeholder="0 = unlimited" />
+                  <span class="rf-unit">Mbps</span>
+                </div>
+                <div class="rf-form-hint">Kecepatan MikroTik menerima data</div>
+              </div>
+              <div class="rf-form-field">
+                <label>
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+                  Upload (Mbps)
+                </label>
+                <div class="rf-input-unit">
+                  <input v-model.number="limitForm.rate_up" type="number" min="0" max="10000" placeholder="0 = unlimited" />
+                  <span class="rf-unit">Mbps</span>
+                </div>
+                <div class="rf-form-hint">Kecepatan MikroTik mengirim data</div>
+              </div>
+            </div>
+            <div v-if="limitForm.rate_down || limitForm.rate_up" class="rf-info-box rf-info-box-success">
+              Akan diterapkan: ↓{{ limitForm.rate_down || '∞' }} Mbps · ↑{{ limitForm.rate_up || '∞' }} Mbps
+            </div>
+            <div v-else class="rf-info-box">
+              Kosong / 0 = hapus semua limit (unlimited)
+            </div>
+          </div>
+          <footer class="rf-modal-foot">
+            <button @click="openLimitWg = false" class="btn-secondary">Cancel</button>
+            <button v-if="limitForm.rate_down || limitForm.rate_up" @click="limitForm.rate_down=0;limitForm.rate_up=0;setWgLimit()" class="btn-secondary" style="color:var(--danger)">
+              Hapus Limit
+            </button>
+            <button @click="setWgLimit" :disabled="limitLoading" class="btn-primary">
+              <span v-if="limitLoading" class="rf-spinner" style="width:14px;height:14px;border-width:2px"></span>
+              {{ limitLoading ? 'Applying…' : 'Apply Limit' }}
+            </button>
+          </footer>
+        </div>
+      </div>
+    </Transition>
+
     <!-- ═══ Modal: ROS Config ═══ -->
     <Transition name="modal">
       <div v-if="rosConfig" class="rf-modal" @click.self="rosConfig = null">
@@ -501,7 +579,7 @@
     <Transition name="slide">
       <div v-if="copied" class="rf-toast">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-        Disalin ke clipboard
+        {{ toastMsg }}
       </div>
     </Transition>
   </div>
@@ -527,11 +605,15 @@ const showPSK      = ref(false)
 const visiblePass  = ref('')
 const rosConfig    = ref(null)
 const copied       = ref(false)
+const toastMsg     = ref('Disalin ke clipboard')
 
 const openInstallL2tp = ref(false)
 const openAddL2tp     = ref(false)
 const openInstallWg   = ref(false)
 const openAddWg       = ref(false)
+const openLimitWg     = ref(false)
+const limitLoading    = ref(false)
+const limitForm       = ref({ name: '', peer_ip: '', rate_down: 0, rate_up: 0 })
 
 const installL2tpForm = ref({ psk: '' })
 const installWgForm   = ref({ port: 51820 })
@@ -633,6 +715,32 @@ async function deleteWgPeer(name) {
   catch (e) { alert(e.response?.data?.message || 'Gagal hapus') }
 }
 
+function openLimitModal(peer) {
+  limitForm.value = {
+    name:      peer.name,
+    peer_ip:   peer.peer_ip,
+    rate_down: peer.rate_down || 0,
+    rate_up:   peer.rate_up   || 0,
+  }
+  openLimitWg.value = true
+}
+
+async function setWgLimit() {
+  limitLoading.value = true
+  try {
+    const res = await axios.put(`/api/vpn/wireguard/peers/${limitForm.value.name}/limit`, {
+      rate_down: limitForm.value.rate_down || 0,
+      rate_up:   limitForm.value.rate_up   || 0,
+    })
+    openLimitWg.value = false
+    await fetchAll()
+    showToast(limitForm.value.rate_down || limitForm.value.rate_up
+      ? `✓ Limit: ↓${limitForm.value.rate_down||'∞'}M ↑${limitForm.value.rate_up||'∞'}M`
+      : '✓ Speed limit dihapus')
+  } catch (e) { alert(e.response?.data?.message || 'Gagal set limit') }
+  finally { limitLoading.value = false }
+}
+
 async function showMikrotikConfig(type, name) {
   try {
     const url = type === 'l2tp' ? `/api/vpn/l2tp/mikrotik/${name}` : `/api/vpn/wireguard/mikrotik/${name}`
@@ -645,8 +753,14 @@ function genPass() {
   return Math.random().toString(36).slice(2, 9) + Math.random().toString(36).slice(2, 6).toUpperCase()
 }
 
+function showToast(msg = 'Disalin ke clipboard') {
+  toastMsg.value = msg
+  copied.value = true
+  setTimeout(() => copied.value = false, 2500)
+}
+
 function copyText(txt) {
-  navigator.clipboard.writeText(txt).then(() => { copied.value = true; setTimeout(() => copied.value = false, 2000) })
+  navigator.clipboard.writeText(txt).then(() => showToast('Disalin ke clipboard'))
 }
 
 onMounted(fetchAll)
@@ -810,8 +924,26 @@ onMounted(fetchAll)
 }
 .rf-act-warning { background: var(--warning-soft); color: var(--warning); border-color: rgba(245,184,41,.22); }
 .rf-act-warning:hover:not(:disabled) { background: rgba(245,184,41,.2); }
+.rf-act-info    { background: var(--info-soft);    color: var(--info);    border-color: rgba(96,190,255,.22); }
+.rf-act-info:hover:not(:disabled)    { background: rgba(96,190,255,.18); }
 .rf-act-danger  { background: var(--danger-soft);  color: var(--danger);  border-color: rgba(255,94,94,.22); padding: 6px 8px; }
 .rf-act-danger:hover:not(:disabled)  { background: rgba(255,94,94,.2); }
+
+/* ─── Speed badge ─── */
+.rf-speed-badge { display: flex; flex-direction: column; gap: 2px; }
+.rf-speed-dn { font-size: 11px; font-weight: 600; color: var(--success); font-family: 'JetBrains Mono', monospace; }
+.rf-speed-up { font-size: 11px; font-weight: 600; color: var(--warning); font-family: 'JetBrains Mono', monospace; }
+
+/* ─── Input with unit suffix ─── */
+.rf-input-unit { position: relative; display: flex; }
+.rf-input-unit input { flex: 1; padding-right: 52px; }
+.rf-unit {
+  position: absolute; right: 0; top: 0; bottom: 0;
+  display: flex; align-items: center; padding: 0 12px;
+  font-size: 11px; font-weight: 600; color: var(--text-muted);
+  background: var(--bg-elevated); border-left: 1px solid var(--border);
+  border-radius: 0 8px 8px 0; pointer-events: none;
+}
 
 /* ─── Empty ─── */
 .rf-empty {

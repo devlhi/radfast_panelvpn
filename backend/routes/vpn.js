@@ -523,11 +523,118 @@ router.delete(
 
     if (isLinux) {
       try { await runCmd('wg', ['set', 'wg0', 'peer', peer.pubkey, 'remove']) } catch {}
+      // Hapus tc rules untuk peer ini
+      if (peer.peer_ip) removePeerTcLimit(peer.peer_ip)
     }
 
     writeJSON(WG_PEERS_FILE, peers.filter(p => p.name !== name))
     audit.record('vpn.wg.peer_delete', { name }, req)
     res.json({ message: 'Peer dihapus.' })
+  },
+)
+
+// ═════════════════════════════════════════════════════════════════════════
+// WireGuard Speed Limit (tc HTB)
+// ═════════════════════════════════════════════════════════════════════════
+
+/**
+ * Hapus tc rules untuk satu peer berdasarkan IP.
+ * Cukup delete class — filter akan ikut terhapus.
+ */
+function removePeerTcLimit(peerIp) {
+  const classId = parseInt(String(peerIp).split('.')[3], 10)
+  if (!classId || classId < 2 || classId > 254) return
+  try { runCmdSync('tc', ['class', 'del', 'dev', 'wg0', 'classid', `1:${classId}`]) } catch {}
+  // Hapus ingress police filter (match ip src)
+  try {
+    const filters = runCmdSync('tc', ['filter', 'show', 'dev', 'wg0', 'parent', 'ffff:'])
+    // Cari handle filter yang match src IP ini dan hapus
+    const lines = filters.split('\n')
+    let handle = null
+    for (const line of lines) {
+      const hm = line.match(/filter\s+\S+\s+\S+\s+(\S+)\s+/)
+      if (hm) handle = hm[1]
+      if (handle && line.includes(peerIp)) {
+        try { runCmdSync('tc', ['filter', 'del', 'dev', 'wg0', 'parent', 'ffff:', 'handle', handle, 'prio', '1', 'u32']) } catch {}
+        handle = null
+      }
+    }
+  } catch {}
+}
+
+/**
+ * Terapkan HTB rate limit untuk satu WireGuard peer.
+ * rateDown = limit download ke peer (Mbps), rateUp = limit upload dari peer (Mbps)
+ * 0 = hapus limit (unlimited)
+ */
+function applyPeerTcLimit(peerIp, rateDownMbps, rateUpMbps) {
+  if (!isLinux) return
+  const classId = parseInt(String(peerIp).split('.')[3], 10)
+  if (!classId || classId < 2 || classId > 254) return
+
+  // Hapus rules lama dulu
+  removePeerTcLimit(peerIp)
+
+  if (!rateDownMbps && !rateUpMbps) return
+
+  // ── Egress (download → ke peer) via HTB ──────────────────────────────
+  if (rateDownMbps > 0) {
+    const rate = `${rateDownMbps}mbit`
+    // Pastikan root qdisc HTB ada
+    try { runCmdSync('tc', ['qdisc', 'add', 'dev', 'wg0', 'root', 'handle', '1:', 'htb', 'default', '9999']) } catch {}
+    // Class untuk peer
+    try {
+      runCmdSync('tc', ['class', 'add', 'dev', 'wg0', 'parent', '1:', 'classid', `1:${classId}`,
+        'htb', 'rate', rate, 'ceil', rate, 'burst', '15k'])
+    } catch {}
+    // Filter: traffic dst = peer_ip → class ini
+    try {
+      runCmdSync('tc', ['filter', 'add', 'dev', 'wg0', 'parent', '1:', 'protocol', 'ip',
+        'prio', '1', 'u32', 'match', 'ip', 'dst', `${peerIp}/32`, 'flowid', `1:${classId}`])
+    } catch {}
+  }
+
+  // ── Ingress (upload ← dari peer) via police ───────────────────────────
+  if (rateUpMbps > 0) {
+    const rate = `${rateUpMbps}mbit`
+    // Pastikan ingress qdisc ada
+    try { runCmdSync('tc', ['qdisc', 'add', 'dev', 'wg0', 'handle', 'ffff:', 'ingress']) } catch {}
+    try {
+      runCmdSync('tc', ['filter', 'add', 'dev', 'wg0', 'parent', 'ffff:', 'protocol', 'ip',
+        'prio', '1', 'u32', 'match', 'ip', 'src', `${peerIp}/32`,
+        'police', 'rate', rate, 'burst', '1mbit', 'drop', 'flowid', ':1'])
+    } catch {}
+  }
+}
+
+// PUT /api/vpn/wireguard/peers/:name/limit
+router.put(
+  '/wireguard/peers/:name/limit',
+  param('name').isString().matches(/^[a-z][a-z0-9-]{0,40}$/),
+  body('rate_down').isInt({ min: 0, max: 10000 }),
+  body('rate_up').isInt({ min: 0, max: 10000 }),
+  (req, res) => {
+    if (!handleValidation(req, res)) return
+    const name = req.params.name
+    const peers = readJSON(WG_PEERS_FILE)
+    const idx = peers.findIndex(p => p.name === name)
+    if (idx === -1) return res.status(404).json({ message: 'Peer tidak ditemukan.' })
+
+    const rateDown = parseInt(req.body.rate_down, 10) || 0
+    const rateUp   = parseInt(req.body.rate_up,   10) || 0
+
+    peers[idx].rate_down = rateDown
+    peers[idx].rate_up   = rateUp
+    writeJSON(WG_PEERS_FILE, peers)
+
+    if (isLinux) applyPeerTcLimit(peers[idx].peer_ip, rateDown, rateUp)
+
+    audit.record('vpn.wg.peer_limit', { name, rateDown, rateUp }, req)
+    res.json({
+      message: rateDown || rateUp
+        ? `Limit diterapkan: ↓${rateDown}M ↑${rateUp}M`
+        : 'Speed limit dihapus (unlimited).',
+    })
   },
 )
 

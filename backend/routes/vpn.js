@@ -68,10 +68,12 @@ const safeNote = (s) => String(s || '').slice(0, 200).replace(/[\x00-\x1f\x7f]/g
 // STATUS
 // ═════════════════════════════════════════════════════════════════════════
 router.get('/status', (req, res) => {
+  // strongswan bisa jalan sebagai 'strongswan-starter' (Ubuntu 20+) atau 'strongswan'
+  const strongswanRunning = svcRunning('strongswan-starter') || svcRunning('strongswan')
   res.json({
     server_ip: getServerIP(),
-    l2tp:      { running: svcRunning('xl2tpd') && svcRunning('strongswan'), port: 1701 },
-    wireguard: { running: svcRunning('wg-quick@wg0'),                       port: 51820 },
+    l2tp:      { running: strongswanRunning && svcRunning('xl2tpd'), port: 1701 },
+    wireguard: { running: svcRunning('wg-quick@wg0'),                port: 51820 },
   })
 })
 

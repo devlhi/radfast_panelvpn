@@ -51,13 +51,66 @@ function handleValidation(req, res) {
   return true
 }
 
+// ─── Auto-detect systemd GenieACS instances ──────────────────────────────
+// Scan unit files: genieacs-<name>-ui.service → extract name + port
+function scanSystemdInstances() {
+  if (isWin) return []
+  try {
+    // List all genieacs-*-ui service unit files
+    const out = runCmdSync('systemctl', ['list-unit-files', '--no-legend', '--type=service', 'genieacs-*-ui*'])
+    const detected = []
+    for (const line of out.trim().split('\n')) {
+      // Format: "genieacs-myname-ui.service  enabled"
+      const match = line.match(/^genieacs-([a-z][a-z0-9-]{0,30})-ui\.service/)
+      if (!match) continue
+      const name = match[1]
+      // Get port from ExecStart line in unit file
+      try {
+        const unitOut = runCmdSync('systemctl', ['cat', `genieacs-${name}-ui`])
+        const portMatch = unitOut.match(/--port\s+(\d+)/)
+        const uiPort = portMatch ? parseInt(portMatch[1], 10) : null
+
+        const cwmpOut = runCmdSync('systemctl', ['cat', `genieacs-${name}-cwmp`]).catch?.(() => '') || ''
+        const cwmpMatch = cwmpOut.match?.(/--port\s+(\d+)/)
+        const cwmpPort = cwmpMatch ? parseInt(cwmpMatch[1], 10) : null
+
+        // Get DB from Environment line
+        const dbMatch = unitOut.match(/GENIEACS_MONGODB_CONNECTION_URL=.*\/([a-zA-Z0-9_]+)/)
+        const db = dbMatch ? dbMatch[1] : `genieacs_${name.replace(/-/g, '_')}`
+
+        detected.push({ name, ui_port: uiPort, cwmp_port: cwmpPort, db, source: 'systemd' })
+      } catch { /* skip if can't read unit */ }
+    }
+    return detected
+  } catch {
+    return []
+  }
+}
+
 // ═════════════════════════════════════════════════════════════════════════
-// GET /api/instances
+// GET /api/instances — registry + auto-detect dari systemd (hybrid)
 // ═════════════════════════════════════════════════════════════════════════
 router.get('/', (req, res) => {
-  const list = readRegistry().map(inst => ({
+  const registry = readRegistry()
+
+  // Auto-detect dari systemd, merge jika belum ada di registry
+  const systemd = scanSystemdInstances()
+  const merged = [...registry]
+  let changed = false
+  for (const svc of systemd) {
+    if (!merged.find(i => i.name === svc.name)) {
+      // Instance baru dari systemd — tambah ke registry otomatis
+      merged.push({ ...svc, created: new Date().toISOString() })
+      changed = true
+    }
+  }
+  if (changed) {
+    try { writeRegistry(merged.map(({ source, ...rest }) => rest)) } catch {}
+  }
+
+  const list = merged.map(inst => ({
     ...inst,
-    active: isPortListening(inst.ui_port),
+    active: inst.ui_port ? isPortListening(inst.ui_port) : false,
   }))
   res.json(list)
 })

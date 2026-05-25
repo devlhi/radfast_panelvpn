@@ -46,7 +46,9 @@ function getServerIP() {
 
 function svcRunning(name) {
   if (!isLinux) return false
-  validateIdent(name, 'service name')
+  // Systemd service names can contain '@' for template units (e.g. wg-quick@wg0)
+  // Use a dedicated regex instead of validateIdent which doesn't allow '@'
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_@.-]{0,99}$/.test(String(name))) return false
   try { runCmdSync('systemctl', ['is-active', '--quiet', name]); return true }
   catch { return false }
 }

@@ -150,25 +150,35 @@ mkdir -p "${LOG_DIR}"
 chmod 750 "${BACKEND}/data" "${LOG_DIR}"
 
 # Buat .env dari .env.example jika belum ada
+ENV_IS_NEW=0
 if [[ ! -f "${BACKEND}/.env" ]]; then
   [[ -f "${BACKEND}/.env.example" ]] \
     || die ".env.example tidak ditemukan di repo. Cek koneksi internet / repo."
   cp "${BACKEND}/.env.example" "${BACKEND}/.env"
-  ok ".env dibuat dari .env.example"
+  ENV_IS_NEW=1
+  ok ".env dibuat dari .env.example (fresh install)"
+else
+  ok ".env sudah ada — dipertahankan"
 fi
 
-# Auto-generate JWT_SECRET jika masih placeholder atau kosong
-if grep -qE "^JWT_SECRET=(GANTI.*|)$" "${BACKEND}/.env" 2>/dev/null; then
+# Auto-generate JWT_SECRET — selalu generate ulang jika masih sama dengan contoh
+# (ambil nilai dari .env.example sebagai referensi "default")
+EXAMPLE_JWT="$(grep '^JWT_SECRET=' "${BACKEND}/.env.example" 2>/dev/null | cut -d= -f2- || echo '')"
+CURRENT_JWT="$(grep '^JWT_SECRET=' "${BACKEND}/.env" 2>/dev/null | cut -d= -f2- || echo '')"
+if [[ -z "${CURRENT_JWT}" || "${CURRENT_JWT}" == "${EXAMPLE_JWT}" ]]; then
   NEW_SECRET="$(node -e "process.stdout.write(require('crypto').randomBytes(48).toString('hex'))")"
   sed -i "s|^JWT_SECRET=.*|JWT_SECRET=${NEW_SECRET}|" "${BACKEND}/.env"
   ok "JWT_SECRET di-generate otomatis (96 hex chars)"
+else
+  ok "JWT_SECRET sudah dikustomisasi — dipertahankan"
 fi
 
-# Auto-set ALLOWED_ORIGINS ke IP server jika masih default
+# Auto-set ALLOWED_ORIGINS — selalu include IP server + localhost
 SERVER_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || echo '')"
-if [[ -n "${SERVER_IP}" ]] && grep -q "YOUR_SERVER_IP\|localhost" "${BACKEND}/.env" 2>/dev/null; then
-  sed -i "s|YOUR_SERVER_IP|${SERVER_IP}|g" "${BACKEND}/.env"
-  ok "ALLOWED_ORIGINS di-set ke http://${SERVER_IP}:9000"
+if [[ -n "${SERVER_IP}" ]]; then
+  NEW_ORIGINS="http://localhost:5173,http://localhost:9000,http://${SERVER_IP}:9000"
+  sed -i "s|^ALLOWED_ORIGINS=.*|ALLOWED_ORIGINS=${NEW_ORIGINS}|" "${BACKEND}/.env"
+  ok "ALLOWED_ORIGINS di-set: ${NEW_ORIGINS}"
 fi
 
 # ── Install backend deps (diperlukan untuk generate hash) ─────────────────────
@@ -177,11 +187,15 @@ info "Install backend dependencies..."
 npm install --omit=dev 2>&1 | tail -5
 ok "Backend dependencies terinstall"
 
-# ── Generate bcrypt password admin jika belum dikonfigurasi ───────────────────
-DEFAULT_FRAG="DvRQJktYbyea0DUjphIkfeTaz9L"
+# ── Generate bcrypt password admin ────────────────────────────────────────────
+# Generate jika: install baru, hash kosong, atau hash masih sama dengan .env.example
+EXAMPLE_HASH="$(grep '^ADMIN_PASSWORD_HASH=' "${BACKEND}/.env.example" 2>/dev/null | cut -d= -f2- || echo '')"
+CURRENT_HASH="$(grep '^ADMIN_PASSWORD_HASH=' "${BACKEND}/.env" 2>/dev/null | cut -d= -f2- || echo '')"
+
 NEED_HASH=0
-grep -q "${DEFAULT_FRAG}" "${BACKEND}/.env" 2>/dev/null && NEED_HASH=1
-grep -qE "^ADMIN_PASSWORD_HASH=$" "${BACKEND}/.env" 2>/dev/null && NEED_HASH=1
+[[ "${ENV_IS_NEW}" -eq 1 ]] && NEED_HASH=1
+[[ -z "${CURRENT_HASH}" ]] && NEED_HASH=1
+[[ -n "${EXAMPLE_HASH}" && "${CURRENT_HASH}" == "${EXAMPLE_HASH}" ]] && NEED_HASH=1
 
 if [[ "${NEED_HASH}" -eq 1 ]]; then
   echo
@@ -196,7 +210,7 @@ if [[ "${NEED_HASH}" -eq 1 ]]; then
   [[ "${EXIT_CODE}" -ne 0 ]] && die "Gagal generate password. Cek: node scripts/set-admin-password.js --gen"
   warn "Catat password di atas — tidak bisa ditampilkan ulang!"
 else
-  ok "Password admin sudah dikonfigurasi sebelumnya"
+  ok "Password admin sudah dikustomisasi — dipertahankan"
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -74,8 +74,25 @@ http://YOUR_SERVER_IP:9000
 
 ```bash
 cd /opt/radfast-admin
-node backend/scripts/set-admin-password.js --gen
-pm2 restart radfast-admin
+bash reset-password.sh --gen
+```
+
+Script otomatis generate password baru, update `.env`, dan tanya apakah mau restart pm2.
+
+**Opsi lain:**
+
+```bash
+# Generate password random (20 karakter)
+bash reset-password.sh --gen
+
+# Set password sendiri
+bash reset-password.sh --password 'PasswordBaru@123'
+
+# Reset password + hapus 2FA sekaligus
+bash reset-password.sh --gen --reset-2fa
+
+# Ganti username + password sekaligus
+bash reset-password.sh --username adminbaru --gen
 ```
 
 ---

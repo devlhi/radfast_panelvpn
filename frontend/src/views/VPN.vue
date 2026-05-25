@@ -547,23 +547,24 @@ const tabs = computed(() => [
 ])
 
 async function fetchAll() {
-  try {
-    const [statusRes, l2tpRes, l2tpCfgRes, wgRes, wgCfgRes, instRes] = await Promise.all([
-      axios.get('/api/vpn/status'),
-      axios.get('/api/vpn/l2tp/users'),
-      axios.get('/api/vpn/l2tp/config'),
-      axios.get('/api/vpn/wireguard/peers'),
-      axios.get('/api/vpn/wireguard/config'),
-      axios.get('/api/instances'),
-    ])
-    status.value       = statusRes.data
-    l2tpUsers.value    = l2tpRes.data
-    l2tpConfig.value   = l2tpCfgRes.data
-    wgPeers.value      = wgRes.data
-    wgConfig.value     = wgCfgRes.data
-    instanceList.value = instRes.data
-  } catch (e) { console.error(e) }
-  finally { loadingL2tp.value = false; loadingWg.value = false }
+  // allSettled: satu request gagal tidak menghalangi yang lain
+  const [statusRes, l2tpRes, l2tpCfgRes, wgRes, wgCfgRes, instRes] = await Promise.allSettled([
+    axios.get('/api/vpn/status'),
+    axios.get('/api/vpn/l2tp/users'),
+    axios.get('/api/vpn/l2tp/config'),
+    axios.get('/api/vpn/wireguard/peers'),
+    axios.get('/api/vpn/wireguard/config'),
+    axios.get('/api/instances'),
+  ])
+  if (statusRes.status  === 'fulfilled') status.value       = statusRes.value.data
+  if (l2tpRes.status    === 'fulfilled') l2tpUsers.value    = l2tpRes.value.data
+  if (l2tpCfgRes.status === 'fulfilled') l2tpConfig.value   = l2tpCfgRes.value.data
+  if (wgRes.status      === 'fulfilled') wgPeers.value      = wgRes.value.data
+  if (wgCfgRes.status   === 'fulfilled') wgConfig.value     = wgCfgRes.value.data
+  if (instRes.status    === 'fulfilled') instanceList.value = instRes.value.data
+
+  loadingL2tp.value = false
+  loadingWg.value   = false
 }
 
 async function installL2tp() {

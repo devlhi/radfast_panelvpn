@@ -98,8 +98,10 @@ router.post(
     const vpnPass = crypto.randomBytes(8).toString('hex')
 
     try {
+      // ── Install packages ──────────────────────────────────────────────────
       await runCmd(pkgBin, pkgArgs, { timeout: 120_000 })
 
+      // ── Write ipsec.conf ──────────────────────────────────────────────────
       fs.writeFileSync('/etc/ipsec.conf', [
         'config setup',
         '  charondebug="ike 1, knl 1, cfg 0"',
@@ -114,10 +116,12 @@ router.post(
         '  rightprotoport=17/%any',
         '  dpddelay=10',
         '  dpdtimeout=20',
-      ].join('\n'), { mode: 0o600 })
+      ].join('\n') + '\n', { mode: 0o600 })
 
       fs.writeFileSync('/etc/ipsec.secrets', `: PSK "${psk}"\n`, { mode: 0o600 })
 
+      // ── Write xl2tpd.conf ─────────────────────────────────────────────────
+      fs.mkdirSync('/etc/xl2tpd', { recursive: true })
       fs.writeFileSync('/etc/xl2tpd/xl2tpd.conf', [
         '[global]', 'port = 1701', '',
         '[lns default]',
@@ -126,24 +130,46 @@ router.post(
         'require chap = yes', 'refuse pap = yes', 'require authentication = yes',
         'name = RadFastVPN', 'pppoptfile = /etc/ppp/options.xl2tpd',
         'length bit = yes',
-      ].join('\n'), { mode: 0o644 })
+      ].join('\n') + '\n', { mode: 0o644 })
 
+      fs.mkdirSync('/etc/ppp', { recursive: true })
       fs.writeFileSync('/etc/ppp/options.xl2tpd', [
         'ipcp-accept-local', 'ipcp-accept-remote',
         'ms-dns 8.8.8.8', 'ms-dns 8.8.4.4',
         'noccp', 'auth', 'crtscts', 'idle 1800',
         'mtu 1450', 'mru 1450',
         'nodefaultroute', 'lock', 'proxyarp', 'connect-delay 5000',
-      ].join('\n'), { mode: 0o644 })
+      ].join('\n') + '\n', { mode: 0o644 })
 
+      // Buat chap-secrets jika belum ada
+      if (!fs.existsSync('/etc/ppp/chap-secrets')) {
+        fs.writeFileSync('/etc/ppp/chap-secrets', '# RadFast VPN users\n', { mode: 0o600 })
+      }
+
+      // ── Enable IP forwarding ──────────────────────────────────────────────
       try { fs.writeFileSync('/proc/sys/net/ipv4/ip_forward', '1') } catch {}
+      try { runCmdSync('sysctl', ['-w', 'net.ipv4.ip_forward=1']) } catch {}
 
-      await runCmd('systemctl', ['enable', '--now', 'strongswan', 'xl2tpd'])
+      // ── Start services ────────────────────────────────────────────────────
+      // Ubuntu 20+: strongswan-starter; Ubuntu 18 / Debian: strongswan
+      const strongswanSvc = (() => {
+        try { runCmdSync('systemctl', ['status', 'strongswan-starter'], { stdio: 'ignore' }); return 'strongswan-starter' } catch {}
+        try { runCmdSync('systemctl', ['cat', 'strongswan-starter'], { stdio: 'ignore' }); return 'strongswan-starter' } catch {}
+        return 'strongswan'
+      })()
 
+      await runCmd('systemctl', ['enable', '--now', strongswanSvc])
+      await runCmd('systemctl', ['enable', '--now', 'xl2tpd'])
+
+      // ── Save config & default user ────────────────────────────────────────
       writeJSON(L2TP_CFG_FILE, { psk, server_ip: getServerIP(), subnet: '192.168.42.0/24' })
 
       const users = readJSON(L2TP_USERS_FILE)
       if (!users.find(u => u.username === vpnUser)) {
+        // Tambah ke chap-secrets
+        try {
+          fs.appendFileSync('/etc/ppp/chap-secrets', `${vpnUser} * "${vpnPass}" *\n`, { mode: 0o600 })
+        } catch {}
         users.push({ username: vpnUser, password: vpnPass, instance: '', note: 'default', created: new Date().toISOString() })
         writeJSON(L2TP_USERS_FILE, users)
       }
@@ -151,7 +177,10 @@ router.post(
       audit.record('vpn.l2tp.install', { server_ip: getServerIP() }, req)
       res.json({ message: 'L2TP/IPsec berhasil diinstall.', psk, default_user: vpnUser, default_pass: vpnPass })
     } catch (e) {
-      res.status(500).json({ message: 'Install gagal. Cek log server.' })
+      console.error('[vpn.l2tp.install] ERROR:', e.message, e.stderr || '')
+      res.status(500).json({
+        message: `Install gagal: ${e.message?.slice(0, 200) || 'unknown error'}`,
+      })
     }
   },
 )

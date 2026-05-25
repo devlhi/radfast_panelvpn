@@ -27,63 +27,66 @@
 
 ## 🚀 Instalasi — Production (Ubuntu/Debian VPS)
 
+### ⚡ Satu Perintah (Direkomendasikan)
+
+Tidak perlu clone manual — jalankan langsung di VPS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/devlhi/radfast_panelvpn/main/install.sh | sudo bash
+```
+
+Atau download dulu, lalu jalankan:
+
+```bash
+wget -qO install.sh https://raw.githubusercontent.com/devlhi/radfast_panelvpn/main/install.sh
+sudo bash install.sh
+```
+
+Script otomatis akan melakukan:
+
+| # | Langkah | Keterangan |
+|---|---------|------------|
+| 1 | Install Node.js 20 LTS | via NodeSource (apt/yum/dnf) |
+| 2 | Install pnpm + pm2 | global via npm |
+| 3 | Download source code | git clone atau tarball dari GitHub |
+| 4 | Setup `.env` | generate JWT_SECRET + bcrypt password admin |
+| 5 | Build frontend | `npm install` + `npm run build` (Vue → dist) |
+| 6 | Start via pm2 | auto-restart jika crash, log ke `data/logs/` |
+| 7 | pm2 startup | survive reboot otomatis |
+
+> **Password admin** ditampilkan saat instalasi — **catat sekarang**, tidak bisa ditampilkan ulang.
+
 ### Prasyarat
-- Ubuntu 20.04+ / Debian 11+
-- Node.js 18+
-- npm atau pnpm
-- Git
 
-### 1. Clone repository
+- Ubuntu 20.04+ / Debian 11+ / CentOS 8+
+- Akses root / sudo
+- Koneksi internet
 
-```bash
-git clone https://github.com/devlhi/radfast_panelvpn.git
-cd radfast_panelvpn
-```
+### Akses Dashboard
 
-### 2. Setup environment
-
-```bash
-cp backend/.env.example backend/.env
-nano backend/.env
-```
-
-Edit minimal ini di `.env`:
-
-```env
-PORT=9000
-JWT_SECRET=          # generate: node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD_HASH= # akan di-generate otomatis saat pertama run
-ALLOWED_ORIGINS=http://YOUR_SERVER_IP:9000
-```
-
-### 3. Jalankan startup script
-
-```bash
-chmod +x start-prod.sh
-sudo bash start-prod.sh
-```
-
-Script otomatis akan:
-- ✅ Install backend dependencies
-- ✅ Build frontend (Vue → dist)
-- ✅ Generate password admin + bcrypt hash → simpan ke `.env`
-- ✅ Start backend via pm2 (auto-restart jika crash)
-- ✅ Setup pm2 startup (survive reboot)
-- ✅ Start VPN services (strongswan, xl2tpd, wg-quick) jika terinstall
-
-### 4. Akses dashboard
+Setelah instalasi selesai:
 
 ```
 http://YOUR_SERVER_IP:9000
 ```
 
-Password admin ditampilkan saat pertama kali `start-prod.sh` dijalankan — **simpan baik-baik**.
+### Reset Password
 
-Reset password kapan saja:
 ```bash
-bash reset-password.sh --gen
+cd /opt/radfast-admin
+node backend/scripts/set-admin-password.js --gen
+pm2 restart radfast-admin
 ```
+
+---
+
+## 🔄 Update Panel
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/devlhi/radfast_panelvpn/main/install.sh | sudo bash
+```
+
+Script otomatis melakukan `git pull`, rebuild frontend, dan restart pm2. `.env` lama dibackup & dipulihkan.
 
 ---
 
@@ -134,6 +137,16 @@ Akses: `http://localhost:5173`
 
 ---
 
+## 🖥️ GenieACS Instance
+
+Setelah login ke dashboard, buka menu **Instances** untuk install dan kelola GenieACS:
+
+- Isi **Instance Name** → port UI, CWMP, dan nama database di-assign otomatis
+- Klik **Start** / **Stop** untuk kontrol instance
+- Setiap instance berjalan sebagai systemd service (`genieacs-<nama>-ui`, `-cwmp`, `-nbi`, `-fs`)
+
+---
+
 ## 🔧 Manajemen
 
 ```bash
@@ -141,9 +154,6 @@ pm2 status                      # Status proses
 pm2 logs radfast-admin          # Log real-time
 pm2 restart radfast-admin       # Restart backend
 pm2 monit                       # Monitor CPU/RAM
-
-bash reset-password.sh --gen    # Reset password admin
-bash reset-password.sh --reset-2fa  # Reset 2FA
 ```
 
 ---
@@ -185,8 +195,9 @@ radfast_panelvpn/
 │       ├── views/         # Dashboard, Instances, VPN, Monitor, Login
 │       ├── stores/        # Pinia stores (auth)
 │       └── layouts/       # MainLayout
+├── install.sh             # One-command installer (curl | bash)
 ├── start.bat              # Dev starter (Windows)
-├── start-prod.sh          # Production starter (Linux)
+├── start-prod.sh          # Production starter (Linux — jika sudah clone)
 ├── reset-password.bat     # Reset password (Windows)
 ├── reset-password.sh      # Reset password (Linux)
 └── ecosystem.config.js    # pm2 config

@@ -2,17 +2,19 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 #  RadFast ACS — Admin Panel Installer
 #
-#  Usage:
-#    git clone https://github.com/devlhi/radfast_panelvpn.git
-#    cd radfast_panelvpn
+#  Jalankan LANGSUNG (tanpa clone manual):
+#    curl -fsSL https://raw.githubusercontent.com/devlhi/radfast_panelvpn/main/install.sh | sudo bash
+#
+#  Atau download dulu lalu jalankan:
+#    wget -qO install.sh https://raw.githubusercontent.com/devlhi/radfast_panelvpn/main/install.sh
 #    sudo bash install.sh
 #
-#  Apa yang dilakukan:
+#  Yang dilakukan secara otomatis:
 #    1. Install Node.js 20 LTS (jika belum ada)
 #    2. Install pnpm + pm2
-#    3. Install backend dependencies
-#    4. Build frontend (Vue → dist)
-#    5. Setup .env + auto-generate password admin
+#    3. Download source code dari GitHub → /opt/radfast-admin
+#    4. Setup .env + auto-generate JWT_SECRET + bcrypt password admin
+#    5. Install dependencies backend & build frontend (Vue → dist)
 #    6. Start via pm2 (auto-restart jika crash)
 #    7. Setup pm2 startup (survive reboot)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -25,94 +27,157 @@ ok()   { echo -e "  ${GREEN}[✓]${RESET} $*"; }
 info() { echo -e "  ${CYAN}[i]${RESET} $*"; }
 warn() { echo -e "  ${YELLOW}[!]${RESET} $*"; }
 die()  { echo -e "\n  ${RED}[✗] ERROR: $*${RESET}\n" >&2; exit 1; }
-step() { echo -e "\n${BOLD}${CYAN}── $* ──${RESET}"; }
+step() { echo -e "\n${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"; \
+         echo -e "${BOLD}${CYAN}  $*${RESET}"; \
+         echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"; }
 
-# ─── Resolve path ─────────────────────────────────────────────────────────────
-INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# ─── Konfigurasi ──────────────────────────────────────────────────────────────
+REPO_URL="https://github.com/devlhi/radfast_panelvpn.git"
+TARBALL_URL="https://github.com/devlhi/radfast_panelvpn/archive/refs/heads/main.tar.gz"
+INSTALL_DIR="/opt/radfast-admin"
 BACKEND="${INSTALL_DIR}/backend"
 FRONTEND="${INSTALL_DIR}/frontend"
 LOG_DIR="${BACKEND}/data/logs"
 
+# ─── Banner ───────────────────────────────────────────────────────────────────
 echo
-echo -e "${BOLD}  ██████╗  █████╗ ██████╗ ███████╗ █████╗ ███████╗████████╗${RESET}"
-echo -e "${BOLD}  ██╔══██╗██╔══██╗██╔══██╗██╔════╝██╔══██╗██╔════╝╚══██╔══╝${RESET}"
-echo -e "${BOLD}  ██████╔╝███████║██║  ██║█████╗  ███████║███████╗   ██║   ${RESET}"
-echo -e "${BOLD}  ██╔══██╗██╔══██║██║  ██║██╔══╝  ██╔══██║╚════██║   ██║   ${RESET}"
-echo -e "${BOLD}  ██║  ██║██║  ██║██████╔╝██║     ██║  ██║███████║   ██║   ${RESET}"
-echo -e "${BOLD}  ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝ ╚═╝     ╚═╝  ╚═╝╚══════╝   ╚═╝  ${RESET}"
+echo -e "${BOLD}${CYAN}  ██████╗  █████╗ ██████╗ ███████╗ █████╗ ███████╗████████╗${RESET}"
+echo -e "${BOLD}${CYAN}  ██╔══██╗██╔══██╗██╔══██╗██╔════╝██╔══██╗██╔════╝╚══██╔══╝${RESET}"
+echo -e "${BOLD}${CYAN}  ██████╔╝███████║██║  ██║█████╗  ███████║███████╗   ██║   ${RESET}"
+echo -e "${BOLD}${CYAN}  ██╔══██╗██╔══██║██║  ██║██╔══╝  ██╔══██║╚════██║   ██║   ${RESET}"
+echo -e "${BOLD}${CYAN}  ██║  ██║██║  ██║██████╔╝██║     ██║  ██║███████║   ██║   ${RESET}"
+echo -e "${BOLD}${CYAN}  ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝ ╚═╝     ╚═╝  ╚═╝╚══════╝   ╚═╝  ${RESET}"
 echo
-echo -e "${BOLD}  RadFast ACS — Admin Panel Installer${RESET}"
-echo -e "  ══════════════════════════════════════"
+echo -e "${BOLD}  RadFast ACS — Admin Panel Installer v1.0${RESET}"
+echo -e "  Install dir : ${CYAN}${INSTALL_DIR}${RESET}"
+echo -e "  Repository  : ${CYAN}${REPO_URL}${RESET}"
+echo
+
+# ─── Harus root ───────────────────────────────────────────────────────────────
+[[ "${EUID}" -ne 0 ]] && die "Jalankan dengan sudo: sudo bash install.sh"
 
 # ══════════════════════════════════════════════════════════════════════════════
-step "1/6  Cek & install Node.js"
+step "1/7  Cek & install Node.js 20 LTS"
 # ══════════════════════════════════════════════════════════════════════════════
 
 NODE_MAJOR=0
 command -v node >/dev/null 2>&1 \
-  && NODE_MAJOR="$(node -e 'process.stdout.write(process.versions.node.split(".")[0])')"
+  && NODE_MAJOR="$(node -e 'process.stdout.write(process.versions.node.split(".")[0])')" 2>/dev/null || true
 
 if (( NODE_MAJOR >= 18 )); then
-  ok "Node.js $(node -v) — OK"
+  ok "Node.js $(node -v) sudah terinstall"
 else
   info "Install Node.js 20 LTS via NodeSource..."
   if command -v apt-get >/dev/null 2>&1; then
+    apt-get install -y -qq curl 2>&1 | tail -2
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash - 2>&1 | tail -3
     apt-get install -y -qq nodejs 2>&1 | tail -3
   elif command -v yum >/dev/null 2>&1; then
+    yum install -y -q curl 2>&1 | tail -2
     curl -fsSL https://rpm.nodesource.com/setup_20.x | bash - 2>&1 | tail -3
     yum install -y -q nodejs 2>&1 | tail -3
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y -q curl 2>&1 | tail -2
+    curl -fsSL https://rpm.nodesource.com/setup_20.x | bash - 2>&1 | tail -3
+    dnf install -y -q nodejs 2>&1 | tail -3
   else
-    die "Package manager tidak dikenali. Install Node.js 18+ manual lalu jalankan ulang."
+    die "Package manager tidak dikenali (bukan apt/yum/dnf). Install Node.js 18+ manual."
   fi
   ok "Node.js $(node -v) terinstall"
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-step "2/6  Install pnpm & pm2"
+step "2/7  Install pnpm & pm2"
 # ══════════════════════════════════════════════════════════════════════════════
 
 if ! command -v pnpm >/dev/null 2>&1; then
   info "Install pnpm..."
-  npm install -g pnpm 2>&1 | tail -3
+  npm install -g pnpm --silent 2>&1 | tail -2
 fi
 ok "pnpm $(pnpm -v)"
 
 if ! command -v pm2 >/dev/null 2>&1; then
   info "Install pm2..."
-  npm install -g pm2 2>&1 | tail -3
+  npm install -g pm2 --silent 2>&1 | tail -2
 fi
 ok "pm2 $(pm2 -v)"
 
 # ══════════════════════════════════════════════════════════════════════════════
-step "3/6  Setup .env & generate password admin"
+step "3/7  Download source code RadFast"
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Backup .env jika sudah ada install sebelumnya
+if [[ -f "${BACKEND}/.env" ]]; then
+  cp "${BACKEND}/.env" "/tmp/radfast-env-backup-$(date +%s)"
+  ok ".env lama dibackup ke /tmp/radfast-env-backup-*"
+fi
+
+# Download source code
+if command -v git >/dev/null 2>&1; then
+  info "Download via git clone..."
+  if [[ -d "${INSTALL_DIR}/.git" ]]; then
+    git -C "${INSTALL_DIR}" pull --rebase --autostash 2>&1 | tail -3
+    ok "Source code diperbarui (git pull)"
+  else
+    rm -rf "${INSTALL_DIR}"
+    git clone --depth=1 "${REPO_URL}" "${INSTALL_DIR}" 2>&1 | tail -3
+    ok "Source code berhasil didownload (git clone)"
+  fi
+else
+  info "git tidak ditemukan — download via tarball..."
+  command -v curl >/dev/null 2>&1 || apt-get install -y -qq curl 2>/dev/null || die "curl/git tidak tersedia."
+  TMP_TAR="/tmp/radfast-main.tar.gz"
+  curl -fsSL "${TARBALL_URL}" -o "${TMP_TAR}" || die "Gagal download tarball dari GitHub."
+  rm -rf "${INSTALL_DIR}"
+  mkdir -p "${INSTALL_DIR}"
+  tar -xzf "${TMP_TAR}" --strip-components=1 -C "${INSTALL_DIR}"
+  rm -f "${TMP_TAR}"
+  ok "Source code berhasil didownload (tarball)"
+fi
+
+# Restore .env backup jika ada
+LATEST_BACKUP="$(ls -t /tmp/radfast-env-backup-* 2>/dev/null | head -1 || true)"
+if [[ -n "${LATEST_BACKUP}" && -f "${LATEST_BACKUP}" ]]; then
+  cp "${LATEST_BACKUP}" "${BACKEND}/.env"
+  ok ".env lama dipulihkan"
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+step "4/7  Setup .env & generate credentials"
 # ══════════════════════════════════════════════════════════════════════════════
 
 mkdir -p "${LOG_DIR}"
 chmod 750 "${BACKEND}/data" "${LOG_DIR}"
 
+# Buat .env dari .env.example jika belum ada
 if [[ ! -f "${BACKEND}/.env" ]]; then
   [[ -f "${BACKEND}/.env.example" ]] \
-    && cp "${BACKEND}/.env.example" "${BACKEND}/.env" \
-    || die ".env.example tidak ditemukan. Pastikan repo ter-clone lengkap."
+    || die ".env.example tidak ditemukan di repo. Cek koneksi internet / repo."
+  cp "${BACKEND}/.env.example" "${BACKEND}/.env"
   ok ".env dibuat dari .env.example"
 fi
 
-# Generate JWT_SECRET jika masih placeholder
-if grep -qE "^JWT_SECRET=GANTI|^JWT_SECRET=$" "${BACKEND}/.env" 2>/dev/null; then
+# Auto-generate JWT_SECRET jika masih placeholder atau kosong
+if grep -qE "^JWT_SECRET=(GANTI.*|)$" "${BACKEND}/.env" 2>/dev/null; then
   NEW_SECRET="$(node -e "process.stdout.write(require('crypto').randomBytes(48).toString('hex'))")"
   sed -i "s|^JWT_SECRET=.*|JWT_SECRET=${NEW_SECRET}|" "${BACKEND}/.env"
-  ok "JWT_SECRET di-generate otomatis"
+  ok "JWT_SECRET di-generate otomatis (96 hex chars)"
 fi
 
-# ── Install backend deps (untuk generate hash) ────────────────────────────────
+# Auto-set ALLOWED_ORIGINS ke IP server jika masih default
+SERVER_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || echo '')"
+if [[ -n "${SERVER_IP}" ]] && grep -q "YOUR_SERVER_IP\|localhost" "${BACKEND}/.env" 2>/dev/null; then
+  sed -i "s|YOUR_SERVER_IP|${SERVER_IP}|g" "${BACKEND}/.env"
+  ok "ALLOWED_ORIGINS di-set ke http://${SERVER_IP}:9000"
+fi
+
+# ── Install backend deps (diperlukan untuk generate hash) ─────────────────────
 cd "${BACKEND}"
-if [[ ! -d "node_modules/bcryptjs" ]]; then
-  info "Install backend deps..."
-  npm install 2>&1 | tail -5
-fi
+info "Install backend dependencies..."
+npm install --omit=dev 2>&1 | tail -5
+ok "Backend dependencies terinstall"
 
-# Generate password hash jika masih default/kosong
+# ── Generate bcrypt password admin jika belum dikonfigurasi ───────────────────
 DEFAULT_FRAG="DvRQJktYbyea0DUjphIkfeTaz9L"
 NEED_HASH=0
 grep -q "${DEFAULT_FRAG}" "${BACKEND}/.env" 2>/dev/null && NEED_HASH=1
@@ -120,47 +185,51 @@ grep -qE "^ADMIN_PASSWORD_HASH=$" "${BACKEND}/.env" 2>/dev/null && NEED_HASH=1
 
 if [[ "${NEED_HASH}" -eq 1 ]]; then
   echo
-  echo -e "  ${YELLOW}════════════════════════════════════════════════${RESET}"
-  info "Generate password admin baru..."
+  echo -e "  ${YELLOW}╔══════════════════════════════════════════════╗${RESET}"
+  echo -e "  ${YELLOW}║       PASSWORD ADMIN (simpan sekarang!)      ║${RESET}"
+  echo -e "  ${YELLOW}╠══════════════════════════════════════════════╣${RESET}"
   set +e
   node scripts/set-admin-password.js --gen
+  EXIT_CODE=$?
   set -e
-  echo -e "  ${YELLOW}════════════════════════════════════════════════${RESET}"
-  warn "Simpan password di atas sekarang!"
+  echo -e "  ${YELLOW}╚══════════════════════════════════════════════╝${RESET}"
+  [[ "${EXIT_CODE}" -ne 0 ]] && die "Gagal generate password. Cek: node scripts/set-admin-password.js --gen"
+  warn "Catat password di atas — tidak bisa ditampilkan ulang!"
 else
-  ok "Password admin sudah dikonfigurasi"
+  ok "Password admin sudah dikonfigurasi sebelumnya"
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-step "4/6  Install & build frontend"
+step "5/7  Install dependencies & build frontend"
 # ══════════════════════════════════════════════════════════════════════════════
 
 cd "${FRONTEND}"
 
-# Reinstall jika node_modules dari Windows (ada .cmd files)
-if ls node_modules/.bin/*.cmd >/dev/null 2>&1; then
-  warn "node_modules dari Windows terdeteksi — reinstall untuk Linux..."
+# Hapus node_modules lama jika ada (fresh install di server baru)
+if [[ -d "node_modules" ]]; then
+  info "Bersihkan node_modules lama..."
   rm -rf node_modules package-lock.json pnpm-lock.yaml 2>/dev/null || true
 fi
 
-if [[ ! -d "node_modules/vue" ]]; then
-  info "Install frontend deps..."
-  npm install 2>&1 | tail -5
-fi
+info "Install frontend dependencies..."
+npm install 2>&1 | tail -5
+ok "Frontend dependencies terinstall"
 
 chmod +x node_modules/.bin/* 2>/dev/null || true
 
-info "Build frontend..."
-npm run build || node node_modules/vite/bin/vite.js build \
-  || die "Frontend build gagal. Cek error di atas."
+info "Build frontend (Vue → dist)..."
+npm run build 2>&1 | tail -5 \
+  || node node_modules/vite/bin/vite.js build 2>&1 | tail -5 \
+  || die "Frontend build gagal. Jalankan: cd ${FRONTEND} && npm run build"
 ok "Frontend berhasil di-build"
 
 # ══════════════════════════════════════════════════════════════════════════════
-step "5/6  Start dengan pm2"
+step "6/7  Start dengan pm2"
 # ══════════════════════════════════════════════════════════════════════════════
 
 cd "${INSTALL_DIR}"
 
+# Stop & delete proses lama jika ada
 pm2 stop  radfast-admin 2>/dev/null || true
 pm2 delete radfast-admin 2>/dev/null || true
 
@@ -183,48 +252,48 @@ pm2 save
 ok "Backend berjalan via pm2"
 
 # ══════════════════════════════════════════════════════════════════════════════
-step "6/6  Setup auto-start saat reboot"
+step "7/7  Setup auto-start saat reboot"
 # ══════════════════════════════════════════════════════════════════════════════
 
-if [[ "${EUID}" -eq 0 ]]; then
-  pm2 startup systemd -u root --hp /root 2>/dev/null || pm2 startup 2>/dev/null || true
-  pm2 save
-  ok "pm2 startup dikonfigurasi"
-else
-  STARTUP_CMD="$(pm2 startup 2>/dev/null | grep 'sudo' | tail -1 || true)"
-  if [[ -n "${STARTUP_CMD}" ]]; then
-    warn "Jalankan ini untuk auto-start saat reboot:"
-    echo -e "\n    ${BOLD}${STARTUP_CMD}${RESET}\n"
-    warn "Lalu: pm2 save"
-  fi
-fi
+pm2 startup systemd -u root --hp /root 2>/dev/null \
+  || pm2 startup 2>/dev/null \
+  || warn "pm2 startup gagal — jalankan manual: pm2 startup"
+pm2 save
+ok "pm2 startup dikonfigurasi (survive reboot)"
 
 # ── Health check ──────────────────────────────────────────────────────────────
-info "Menunggu backend siap..."
-for i in $(seq 1 15); do
-  curl -sf "http://localhost:9000/api/health" >/dev/null 2>&1 && break
+info "Menunggu backend siap (maks 20 detik)..."
+for i in $(seq 1 20); do
+  if curl -sf "http://localhost:9000/api/health" >/dev/null 2>&1; then
+    break
+  fi
   sleep 1
 done
 
-# ── Summary ───────────────────────────────────────────────────────────────────
-SERVER_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || echo 'YOUR_IP')"
-
+# ══════════════════════════════════════════════════════════════════════════════
+#  SUMMARY
+# ══════════════════════════════════════════════════════════════════════════════
 echo
-echo -e "  ${BOLD}══════════════════════════════════════════════${RESET}"
+echo -e "  ${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
 if curl -sf "http://localhost:9000/api/health" >/dev/null 2>&1; then
-  echo -e "  ${GREEN}${BOLD}[✓] RadFast Admin Panel berhasil diinstall!${RESET}"
+  echo -e "  ${BOLD}${GREEN}║   ✓  RadFast Admin Panel berhasil diinstall!    ║${RESET}"
 else
-  echo -e "  ${YELLOW}[!] Panel mungkin belum siap — cek: pm2 logs radfast-admin${RESET}"
+  echo -e "  ${BOLD}${YELLOW}║   !  Panel mungkin belum siap — cek log pm2     ║${RESET}"
 fi
-echo
-echo -e "  ${BOLD}URL Dashboard${RESET}: http://${SERVER_IP}:9000"
-echo -e "  ${BOLD}Login${RESET}        : admin / (password yang ditampilkan tadi)"
-echo
-echo -e "  ${BOLD}Perintah berguna:${RESET}"
-echo -e "    pm2 logs radfast-admin    — lihat log"
-echo -e "    pm2 restart radfast-admin — restart"
-echo -e "    bash reset-password.sh    — reset password"
-echo
-echo -e "  ${YELLOW}[!] Setelah login, install GenieACS dari menu Instances${RESET}"
-echo -e "  ${BOLD}══════════════════════════════════════════════${RESET}"
+echo -e "  ${BOLD}╠══════════════════════════════════════════════════╣${RESET}"
+echo -e "  ${BOLD}║                                                  ║${RESET}"
+echo -e "  ${BOLD}║  URL     : http://${SERVER_IP:-YOUR_IP}:9000$(printf '%*s' $((28 - ${#SERVER_IP:-YOUR_IP})) '')║${RESET}"
+echo -e "  ${BOLD}║  Login   : admin / (password ditampilkan tadi)   ║${RESET}"
+echo -e "  ${BOLD}║  Dir     : ${INSTALL_DIR}$(printf '%*s' $((38 - ${#INSTALL_DIR})) '')║${RESET}"
+echo -e "  ${BOLD}║                                                  ║${RESET}"
+echo -e "  ${BOLD}╠══════════════════════════════════════════════════╣${RESET}"
+echo -e "  ${BOLD}║  Perintah berguna:                               ║${RESET}"
+echo -e "  ${BOLD}║  pm2 logs radfast-admin   — lihat log            ║${RESET}"
+echo -e "  ${BOLD}║  pm2 restart radfast-admin — restart             ║${RESET}"
+echo -e "  ${BOLD}║  pm2 status               — cek status           ║${RESET}"
+echo -e "  ${BOLD}║                                                  ║${RESET}"
+echo -e "  ${BOLD}╠══════════════════════════════════════════════════╣${RESET}"
+echo -e "  ${BOLD}${YELLOW}║  ⚠ Setelah login, install GenieACS dari menu    ║${RESET}"
+echo -e "  ${BOLD}${YELLOW}║    Instances di dashboard.                       ║${RESET}"
+echo -e "  ${BOLD}╚══════════════════════════════════════════════════╝${RESET}"
 echo

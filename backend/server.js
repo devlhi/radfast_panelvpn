@@ -86,9 +86,22 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', uptime: process.uptime() })
 })
 
-// ── Threat detection / IP blocker (runs before everything else) ───────────
-// Mounted globally so scanners hitting /wp-login.php, /.env, /phpmyadmin
-// etc. are also caught — not just /api/* requests.
+// ── Static frontend (HARUS sebelum CSRF & threat guard) ───────────────────
+// File CSS/JS/img tidak butuh CSRF token — serve langsung tanpa lewat middleware API
+const distPath = path.join(__dirname, '..', 'frontend', 'dist')
+if (fs.existsSync(distPath)) {
+  app.use(express.static(distPath, {
+    maxAge: '7d',
+    etag: true,
+    setHeaders(res, filePath) {
+      if (filePath.endsWith('.html')) {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate')
+      }
+    },
+  }))
+}
+
+// ── Threat detection / IP blocker ─────────────────────────────────────────
 app.use(threatGuard)
 
 // ── CSRF protection (after cookie-parser, before mutating routes) ─────────
@@ -106,18 +119,8 @@ app.use('/api/vpn',       auth, require('./routes/vpn'))
 app.use('/api/monitor',   auth, require('./routes/monitor'))
 app.use('/api/security',  require('./routes/security'))
 
-// ── Static frontend (production) ───────────────────────────────────────────
-const distPath = path.join(__dirname, '..', 'frontend', 'dist')
+// ── SPA fallback (semua non-API route → index.html) ───────────────────────
 if (fs.existsSync(distPath)) {
-  app.use(express.static(distPath, {
-    maxAge: '7d',
-    etag: true,
-    setHeaders(res, filePath) {
-      if (filePath.endsWith('.html')) {
-        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate')
-      }
-    },
-  }))
   app.use((req, res, next) => {
     if (req.path.startsWith('/api')) return next()
     res.sendFile(path.join(distPath, 'index.html'))

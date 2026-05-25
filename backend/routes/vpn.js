@@ -106,9 +106,17 @@ router.post(
       await runCmd(pkgBin, pkgArgs, { timeout: 120_000 })
 
       // ── Write ipsec.conf ──────────────────────────────────────────────────
+      // rightprotoport=17/0 lebih kompatibel dengan MikroTik dibanding 17/%any
       fs.writeFileSync('/etc/ipsec.conf', [
         'config setup',
         '  charondebug="ike 1, knl 1, cfg 0"',
+        '',
+        'conn %default',
+        '  ikelifetime=60m',
+        '  keylife=20m',
+        '  rekeymargin=3m',
+        '  keyingtries=1',
+        '',
         'conn L2TP-PSK',
         '  authby=secret',
         '  auto=add',
@@ -117,9 +125,10 @@ router.post(
         '  left=%defaultroute',
         '  leftprotoport=17/1701',
         '  right=%any',
-        '  rightprotoport=17/%any',
+        '  rightprotoport=17/0',
         '  dpddelay=10',
         '  dpdtimeout=20',
+        '  dpdaction=clear',
       ].join('\n') + '\n', { mode: 0o600 })
 
       fs.writeFileSync('/etc/ipsec.secrets', `: PSK "${psk}"\n`, { mode: 0o600 })
@@ -150,6 +159,13 @@ router.post(
         fs.writeFileSync('/etc/ppp/chap-secrets', '# RadFast VPN users\n', { mode: 0o600 })
       }
 
+      // ── PPP device (dibutuhkan di LXC container) ──────────────────────────
+      try { runCmdSync('modprobe', ['ppp_generic']) } catch {}
+      if (!fs.existsSync('/dev/ppp')) {
+        try { runCmdSync('mknod', ['/dev/ppp', 'c', '108', '0']) } catch {}
+        try { fs.chmodSync('/dev/ppp', 0o600) } catch {}
+      }
+
       // ── Enable IP forwarding ──────────────────────────────────────────────
       try { fs.writeFileSync('/proc/sys/net/ipv4/ip_forward', '1') } catch {}
       try { runCmdSync('sysctl', ['-w', 'net.ipv4.ip_forward=1']) } catch {}
@@ -157,13 +173,17 @@ router.post(
       // ── Start services ────────────────────────────────────────────────────
       // Ubuntu 20+: strongswan-starter; Ubuntu 18 / Debian: strongswan
       const strongswanSvc = (() => {
-        try { runCmdSync('systemctl', ['status', 'strongswan-starter'], { stdio: 'ignore' }); return 'strongswan-starter' } catch {}
-        try { runCmdSync('systemctl', ['cat', 'strongswan-starter'], { stdio: 'ignore' }); return 'strongswan-starter' } catch {}
+        try { runCmdSync('systemctl', ['cat', 'strongswan-starter']); return 'strongswan-starter' } catch {}
         return 'strongswan'
       })()
 
       await runCmd('systemctl', ['enable', '--now', strongswanSvc])
       await runCmd('systemctl', ['enable', '--now', 'xl2tpd'])
+
+      // ── Reload ipsec config (wajib agar conn L2TP-PSK dimuat charon) ──────
+      try { await runCmd('ipsec', ['reload']) } catch {}
+      // Restart xl2tpd agar baca config baru
+      try { await runCmd('systemctl', ['restart', 'xl2tpd']) } catch {}
 
       // ── Save config & default user ────────────────────────────────────────
       writeJSON(L2TP_CFG_FILE, { psk, server_ip: getServerIP(), subnet: '192.168.42.0/24' })
@@ -210,7 +230,8 @@ router.put(
     if (isLinux) {
       try {
         fs.writeFileSync('/etc/ipsec.secrets', `: PSK "${psk}"\n`, { mode: 0o600 })
-        try { runCmdSync('systemctl', ['reload', 'strongswan']) } catch {}
+        try { runCmdSync('ipsec', ['rereadsecrets']) } catch {}
+        try { runCmdSync('ipsec', ['reload']) } catch {}
       } catch {}
     }
     audit.record('vpn.l2tp.psk_rotate', {}, req)

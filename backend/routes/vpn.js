@@ -185,6 +185,9 @@ router.post(
       // Restart xl2tpd agar baca config baru
       try { await runCmd('systemctl', ['restart', 'xl2tpd']) } catch {}
 
+      // ── PPP ip-up script untuk rate limiting ──────────────────────────────
+      writePppIpUpScript()
+
       // ── Save config & default user ────────────────────────────────────────
       writeJSON(L2TP_CFG_FILE, { psk, server_ip: getServerIP(), subnet: '192.168.42.0/24' })
 
@@ -328,6 +331,88 @@ router.delete(
     res.json({ message: 'User dihapus.' })
   },
 )
+
+// PUT /api/vpn/l2tp/users/:name/limit
+router.put(
+  '/l2tp/users/:name/limit',
+  param('name').isString().matches(/^[a-zA-Z0-9_.-]{1,64}$/),
+  body('rate_down').isInt({ min: 0, max: 10000 }),
+  body('rate_up').isInt({ min: 0, max: 10000 }),
+  (req, res) => {
+    if (!handleValidation(req, res)) return
+    const name = req.params.name
+    const users = readJSON(L2TP_USERS_FILE)
+    const idx = users.findIndex(u => u.username === name)
+    if (idx === -1) return res.status(404).json({ message: 'User tidak ditemukan.' })
+
+    const rateDown = parseInt(req.body.rate_down, 10) || 0
+    const rateUp   = parseInt(req.body.rate_up,   10) || 0
+    users[idx].rate_down = rateDown
+    users[idx].rate_up   = rateUp
+    writeJSON(L2TP_USERS_FILE, users)
+
+    // Tulis ip-up script agar limit diterapkan saat user connect
+    if (isLinux) writePppIpUpScript()
+
+    audit.record('vpn.l2tp.user_limit', { username: name, rateDown, rateUp }, req)
+    res.json({
+      message: rateDown || rateUp
+        ? `Limit diterapkan: ↓${rateDown}M ↑${rateUp}M`
+        : 'Speed limit dihapus.',
+    })
+  },
+)
+
+/** Tulis /etc/ppp/ip-up.d/radfast-limit — dibaca tiap kali ppp connect */
+function writePppIpUpScript() {
+  const dataFile = L2TP_USERS_FILE.replace(/\\/g, '/')
+  const script = `#!/bin/bash
+# RadFast — apply tc rate limit saat PPP connect
+IFACE="$1"
+[ -z "$IFACE" ] && exit 0
+[ -z "$PEERNAME" ] && exit 0
+
+# Simpan mapping interface→username untuk traffic monitoring
+mkdir -p /var/run/radfast-ppp
+echo "$PEERNAME" > "/var/run/radfast-ppp/${IFACE}.user"
+
+DATA_FILE="${dataFile}"
+[ -f "$DATA_FILE" ] || exit 0
+
+read RATE_DOWN RATE_UP < <(python3 -c "
+import json
+try:
+  users = json.load(open('$DATA_FILE'))
+  u = next((x for x in users if x.get('username') == '$PEERNAME'), None)
+  d = int(u.get('rate_down') or 0) if u else 0
+  up = int(u.get('rate_up') or 0) if u else 0
+  print(d, up)
+except: print(0, 0)
+" 2>/dev/null)
+
+[ "\${RATE_DOWN:-0}" -gt 0 ] && {
+  tc qdisc add dev "$IFACE" root handle 1: htb default 9999 2>/dev/null
+  tc class add dev "$IFACE" parent 1: classid 1:1 htb rate "\${RATE_DOWN}mbit" ceil "\${RATE_DOWN}mbit" burst 15k 2>/dev/null
+  tc filter add dev "$IFACE" parent 1: protocol ip prio 1 u32 match ip dst 0.0.0.0/0 flowid 1:1 2>/dev/null
+}
+
+[ "\${RATE_UP:-0}" -gt 0 ] && {
+  tc qdisc add dev "$IFACE" handle ffff: ingress 2>/dev/null
+  tc filter add dev "$IFACE" parent ffff: protocol ip prio 1 u32 match ip src 0.0.0.0/0 \\
+    police rate "\${RATE_UP}mbit" burst 1mbit drop flowid :1 2>/dev/null
+}
+`
+  const ipDown = `#!/bin/bash
+# RadFast — cleanup mapping saat PPP disconnect
+rm -f "/var/run/radfast-ppp/$1.user"
+`
+  try {
+    fs.mkdirSync('/etc/ppp/ip-up.d',   { recursive: true })
+    fs.mkdirSync('/etc/ppp/ip-down.d', { recursive: true })
+    fs.writeFileSync('/etc/ppp/ip-up.d/radfast-limit',   script,  { mode: 0o755 })
+    fs.writeFileSync('/etc/ppp/ip-down.d/radfast-limit', ipDown,  { mode: 0o755 })
+  } catch (e) { console.error('ppp ip-up:', e.message) }
+}
 
 // RouterOS config — render only from validated stored data.
 router.get(
@@ -683,6 +768,56 @@ add dst-address=10.8.1.0/24 gateway="wg-radfast" comment="RadFast ACS"
 // Legacy compat
 router.get('/clients', (req, res) => {
   res.json({ clients: readJSON(VPN_DATA), status: { running: svcRunning('openvpn@server') } })
+})
+
+// ═════════════════════════════════════════════════════════════════════════
+// TRAFFIC STATS — rx/tx bytes per peer/user (untuk grafik)
+// ═════════════════════════════════════════════════════════════════════════
+router.get('/traffic', (req, res) => {
+  const wg   = []
+  const l2tp = []
+  const ts   = Date.now()
+
+  if (isLinux) {
+    // ── WireGuard: wg show wg0 transfer ────────────────────────────────
+    try {
+      const peers = readJSON(WG_PEERS_FILE)
+      const out   = runCmdSync('wg', ['show', 'wg0', 'transfer'])
+      // Format: pubkey\trx_bytes\ttx_bytes per baris
+      for (const line of out.trim().split('\n')) {
+        const parts = line.split('\t')
+        if (parts.length < 3) continue
+        const [pubkey, rxStr, txStr] = parts
+        const peer = peers.find(p => p.pubkey === pubkey)
+        if (peer) {
+          wg.push({
+            name:    peer.name,
+            peer_ip: peer.peer_ip,
+            rx:      parseInt(rxStr, 10) || 0,
+            tx:      parseInt(txStr, 10) || 0,
+          })
+        }
+      }
+    } catch {}
+
+    // ── L2TP: scan ppp interfaces + mapping username ────────────────────
+    try {
+      const netDir = '/sys/class/net'
+      const ifaces = fs.readdirSync(netDir).filter(d => d.startsWith('ppp'))
+      for (const iface of ifaces) {
+        try {
+          const rx = parseInt(fs.readFileSync(`${netDir}/${iface}/statistics/rx_bytes`,  'utf8').trim(), 10) || 0
+          const tx = parseInt(fs.readFileSync(`${netDir}/${iface}/statistics/tx_bytes`,  'utf8').trim(), 10) || 0
+          // Baca username dari mapping file yang ditulis ip-up script
+          let username = iface
+          try { username = fs.readFileSync(`/var/run/radfast-ppp/${iface}.user`, 'utf8').trim() } catch {}
+          l2tp.push({ name: username, iface, rx, tx })
+        } catch {}
+      }
+    } catch {}
+  }
+
+  res.json({ wg, l2tp, ts })
 })
 
 module.exports = router

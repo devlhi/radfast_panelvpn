@@ -103,16 +103,18 @@
                 <th>MikroTik / User</th>
                 <th>Password</th>
                 <th>Instance</th>
+                <th>Speed Limit</th>
+                <th>Traffic</th>
                 <th>Status</th>
                 <th style="text-align:right">Actions</th>
               </tr>
             </thead>
             <tbody>
               <tr v-if="loadingL2tp">
-                <td colspan="5"><div class="rf-empty"><div class="rf-spinner"></div><span>Memuat user…</span></div></td>
+                <td colspan="7"><div class="rf-empty"><div class="rf-spinner"></div><span>Memuat user…</span></div></td>
               </tr>
               <tr v-else-if="l2tpUsers.length === 0">
-                <td colspan="5">
+                <td colspan="7">
                   <div class="rf-empty">
                     <div class="rf-empty-ic">
                       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
@@ -148,6 +150,23 @@
                   <span v-else class="rf-cell-sub">—</span>
                 </td>
                 <td>
+                  <div v-if="user.rate_down || user.rate_up" class="rf-speed-badge">
+                    <span class="rf-speed-dn">↓{{ user.rate_down || '∞' }}M</span>
+                    <span class="rf-speed-up">↑{{ user.rate_up || '∞' }}M</span>
+                  </div>
+                  <span v-else class="rf-cell-sub">Unlimited</span>
+                </td>
+                <td>
+                  <div class="rf-traffic-cell" @click="openTrafficModal('l2tp', user.username)" title="Lihat grafik traffic">
+                    <TrafficSparkline :history="trafficHistory.l2tp[user.username] || []" />
+                    <div class="rf-traffic-nums" v-if="trafficHistory.l2tp[user.username]?.length">
+                      <span class="rf-dn">↓{{ formatBytes(lastTrafficRate('l2tp', user.username, 'rx')) }}/s</span>
+                      <span class="rf-up">↑{{ formatBytes(lastTrafficRate('l2tp', user.username, 'tx')) }}/s</span>
+                    </div>
+                    <span v-else class="rf-cell-sub">—</span>
+                  </div>
+                </td>
+                <td>
                   <span class="badge" :class="user.connected ? 'badge-success' : 'badge-muted'">
                     <span class="dot" :class="user.connected ? 'dot-success' : 'dot-muted'"></span>
                     {{ user.connected ? 'Connected' : 'Idle' }}
@@ -158,6 +177,10 @@
                     <button class="rf-act rf-act-warning" @click="showMikrotikConfig('l2tp', user.username)">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
                       ROS Config
+                    </button>
+                    <button class="rf-act rf-act-info" @click="openLimitModal({...user, name: user.username, peer_ip: '—'}, 'l2tp')" title="Set Speed Limit">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/><circle cx="12" cy="12" r="4"/></svg>
+                      Limit
                     </button>
                     <button class="rf-act rf-act-danger" @click="deleteL2tpUser(user.username)">
                       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>
@@ -207,16 +230,17 @@
                 <th>Public Key</th>
                 <th>Instance</th>
                 <th>Speed Limit</th>
+                <th>Traffic</th>
                 <th>Status</th>
                 <th style="text-align:right">Actions</th>
               </tr>
             </thead>
             <tbody>
               <tr v-if="loadingWg">
-                <td colspan="7"><div class="rf-empty"><div class="rf-spinner"></div><span>Memuat peers…</span></div></td>
+                <td colspan="8"><div class="rf-empty"><div class="rf-spinner"></div><span>Memuat peers…</span></div></td>
               </tr>
               <tr v-else-if="wgPeers.length === 0">
-                <td colspan="7">
+                <td colspan="8">
                   <div class="rf-empty">
                     <div class="rf-empty-ic">
                       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
@@ -251,6 +275,16 @@
                     <span class="rf-speed-up" title="Upload limit">↑{{ peer.rate_up || '∞' }}M</span>
                   </div>
                   <span v-else class="rf-cell-sub">Unlimited</span>
+                </td>
+                <td>
+                  <div class="rf-traffic-cell" @click="openTrafficModal('wg', peer.name)" title="Lihat grafik traffic">
+                    <TrafficSparkline :history="trafficHistory.wg[peer.name] || []" />
+                    <div class="rf-traffic-nums" v-if="trafficHistory.wg[peer.name]?.length">
+                      <span class="rf-dn">↓{{ formatBytes(lastTrafficRate('wg', peer.name, 'rx')) }}/s</span>
+                      <span class="rf-up">↑{{ formatBytes(lastTrafficRate('wg', peer.name, 'tx')) }}/s</span>
+                    </div>
+                    <span v-else class="rf-cell-sub">—</span>
+                  </div>
                 </td>
                 <td>
                   <span class="badge" :class="peer.connected ? 'badge-success' : 'badge-muted'">
@@ -575,6 +609,50 @@
       </div>
     </Transition>
 
+    <!-- ═══ Modal: Traffic Graph ═══ -->
+    <Transition name="modal">
+      <div v-if="trafficModal" class="rf-modal" @click.self="trafficModal = null">
+        <div class="modal-box rf-modal-card" style="max-width:640px">
+          <header class="rf-modal-head">
+            <div class="rf-modal-head-left">
+              <span class="rf-modal-icon" style="background:var(--success-soft);color:var(--success)">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+              </span>
+              <div>
+                <h3>Traffic — {{ trafficModal.name }}</h3>
+                <p>Update setiap 30 detik · {{ trafficModal.type === 'wg' ? 'WireGuard' : 'L2TP' }}</p>
+              </div>
+            </div>
+            <button @click="trafficModal = null" class="rf-modal-close">×</button>
+          </header>
+          <div class="rf-modal-body">
+            <div class="rf-traffic-stats">
+              <div class="rf-tstat">
+                <div class="rf-tstat-label">↓ Download now</div>
+                <div class="rf-tstat-val rf-dn">{{ formatBytes(lastTrafficRate(trafficModal.type, trafficModal.name, 'rx')) }}/s</div>
+              </div>
+              <div class="rf-tstat">
+                <div class="rf-tstat-label">↑ Upload now</div>
+                <div class="rf-tstat-val rf-up">{{ formatBytes(lastTrafficRate(trafficModal.type, trafficModal.name, 'tx')) }}/s</div>
+              </div>
+              <div class="rf-tstat">
+                <div class="rf-tstat-label">Total RX</div>
+                <div class="rf-tstat-val">{{ formatBytes(lastTrafficTotal(trafficModal.type, trafficModal.name, 'rx')) }}</div>
+              </div>
+              <div class="rf-tstat">
+                <div class="rf-tstat-label">Total TX</div>
+                <div class="rf-tstat-val">{{ formatBytes(lastTrafficTotal(trafficModal.type, trafficModal.name, 'tx')) }}</div>
+              </div>
+            </div>
+            <div class="rf-graph-wrap">
+              <TrafficGraph :history="(trafficModal.type === 'wg' ? trafficHistory.wg : trafficHistory.l2tp)[trafficModal.name] || []" />
+            </div>
+            <p class="rf-form-hint" style="text-align:center">Grafik menampilkan 10 menit terakhir (20 titik × 30s)</p>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
     <!-- ═══ Toast ═══ -->
     <Transition name="slide">
       <div v-if="copied" class="rf-toast">
@@ -586,8 +664,71 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, defineComponent, h } from 'vue'
 import axios from 'axios'
+
+// ── Inline sparkline component (mini, 60×20px) ───────────────────────────
+const TrafficSparkline = defineComponent({
+  props: { history: Array },
+  setup(props) {
+    return () => {
+      const hist = props.history || []
+      if (hist.length < 2) return h('span', { class: 'rf-cell-sub', style: 'font-size:10px' }, '—')
+      const W = 64, H = 18
+      const rates = hist.slice(-20).map((p, i, a) => {
+        if (i === 0) return 0
+        const dt = Math.max((a[i].ts - a[i-1].ts) / 1000, 1)
+        return (a[i].rx - a[i-1].rx + a[i].tx - a[i-1].tx) / dt
+      }).slice(1)
+      const max = Math.max(...rates, 1)
+      const pts = rates.map((v, i) => {
+        const x = (i / (rates.length - 1)) * W
+        const y = H - (v / max) * H
+        return `${x.toFixed(1)},${y.toFixed(1)}`
+      }).join(' ')
+      return h('svg', { width: W, height: H, viewBox: `0 0 ${W} ${H}`, style: 'overflow:visible' }, [
+        h('polyline', { points: pts, fill: 'none', stroke: 'var(--success)', 'stroke-width': '1.5', 'stroke-linejoin': 'round' }),
+      ])
+    }
+  },
+})
+
+// ── Full graph component (560×120px) ────────────────────────────────────
+const TrafficGraph = defineComponent({
+  props: { history: Array },
+  setup(props) {
+    return () => {
+      const hist = props.history || []
+      if (hist.length < 2) return h('div', { class: 'rf-graph-empty' }, 'Belum ada data traffic')
+      const W = 560, H = 120, PAD = 8
+      const items = hist.slice(-20)
+      const rxRates = items.map((p, i, a) => {
+        if (i === 0) return 0
+        const dt = Math.max((a[i].ts - a[i-1].ts) / 1000, 1)
+        return (a[i].rx - a[i-1].rx) / dt
+      }).slice(1)
+      const txRates = items.map((p, i, a) => {
+        if (i === 0) return 0
+        const dt = Math.max((a[i].ts - a[i-1].ts) / 1000, 1)
+        return (a[i].tx - a[i-1].tx) / dt
+      }).slice(1)
+      const maxVal = Math.max(...rxRates, ...txRates, 1024)
+      const toX = (i) => PAD + (i / (rxRates.length - 1 || 1)) * (W - PAD * 2)
+      const toY = (v) => H - PAD - (v / maxVal) * (H - PAD * 2)
+      const rxPts = rxRates.map((v, i) => `${toX(i).toFixed(1)},${toY(v).toFixed(1)}`).join(' ')
+      const txPts = txRates.map((v, i) => `${toX(i).toFixed(1)},${toY(v).toFixed(1)}`).join(' ')
+      return h('svg', { width: '100%', viewBox: `0 0 ${W} ${H}`, style: 'display:block' }, [
+        // Grid lines
+        ...[0.25, 0.5, 0.75, 1].map(f =>
+          h('line', { x1: PAD, x2: W - PAD, y1: toY(maxVal * f), y2: toY(maxVal * f),
+            stroke: 'var(--border)', 'stroke-width': '1', 'stroke-dasharray': '3,3' })
+        ),
+        h('polyline', { points: rxPts, fill: 'none', stroke: 'var(--success)', 'stroke-width': '2', 'stroke-linejoin': 'round' }),
+        h('polyline', { points: txPts, fill: 'none', stroke: 'var(--warning)', 'stroke-width': '2', 'stroke-linejoin': 'round' }),
+      ])
+    }
+  },
+})
 
 const tab          = ref('l2tp')
 const status       = ref({ server_ip: '', l2tp: {}, wireguard: {} })
@@ -613,7 +754,10 @@ const openInstallWg   = ref(false)
 const openAddWg       = ref(false)
 const openLimitWg     = ref(false)
 const limitLoading    = ref(false)
-const limitForm       = ref({ name: '', peer_ip: '', rate_down: 0, rate_up: 0 })
+const limitForm       = ref({ name: '', peer_ip: '', rate_down: 0, rate_up: 0, _type: 'wg' })
+const trafficHistory  = ref({ wg: {}, l2tp: {} })  // { name: [{ts, rx, tx}, ...] }
+const trafficModal    = ref(null)  // { type, name }
+let trafficTimer      = null
 
 const installL2tpForm = ref({ psk: '' })
 const installWgForm   = ref({ port: 51820 })
@@ -715,12 +859,13 @@ async function deleteWgPeer(name) {
   catch (e) { alert(e.response?.data?.message || 'Gagal hapus') }
 }
 
-function openLimitModal(peer) {
+function openLimitModal(peer, type = 'wg') {
   limitForm.value = {
-    name:      peer.name,
-    peer_ip:   peer.peer_ip,
+    name:      peer.name || peer.username,
+    peer_ip:   peer.peer_ip || '—',
     rate_down: peer.rate_down || 0,
     rate_up:   peer.rate_up   || 0,
+    _type:     type,
   }
   openLimitWg.value = true
 }
@@ -728,17 +873,63 @@ function openLimitModal(peer) {
 async function setWgLimit() {
   limitLoading.value = true
   try {
-    const res = await axios.put(`/api/vpn/wireguard/peers/${limitForm.value.name}/limit`, {
-      rate_down: limitForm.value.rate_down || 0,
-      rate_up:   limitForm.value.rate_up   || 0,
-    })
+    const { name, rate_down, rate_up, _type } = limitForm.value
+    const url = _type === 'l2tp'
+      ? `/api/vpn/l2tp/users/${name}/limit`
+      : `/api/vpn/wireguard/peers/${name}/limit`
+    await axios.put(url, { rate_down: rate_down || 0, rate_up: rate_up || 0 })
     openLimitWg.value = false
     await fetchAll()
-    showToast(limitForm.value.rate_down || limitForm.value.rate_up
-      ? `✓ Limit: ↓${limitForm.value.rate_down||'∞'}M ↑${limitForm.value.rate_up||'∞'}M`
+    showToast(rate_down || rate_up
+      ? `✓ Limit: ↓${rate_down||'∞'}M ↑${rate_up||'∞'}M`
       : '✓ Speed limit dihapus')
   } catch (e) { alert(e.response?.data?.message || 'Gagal set limit') }
   finally { limitLoading.value = false }
+}
+
+// ── Traffic polling ───────────────────────────────────────────────────────
+async function fetchTraffic() {
+  try {
+    const res = await axios.get('/api/vpn/traffic')
+    const { wg, l2tp, ts } = res.data
+    const MAX_HISTORY = 20
+
+    for (const peer of (wg || [])) {
+      if (!trafficHistory.value.wg[peer.name]) trafficHistory.value.wg[peer.name] = []
+      const hist = trafficHistory.value.wg[peer.name]
+      hist.push({ ts, rx: peer.rx, tx: peer.tx })
+      if (hist.length > MAX_HISTORY) hist.splice(0, hist.length - MAX_HISTORY)
+    }
+    for (const user of (l2tp || [])) {
+      if (!trafficHistory.value.l2tp[user.name]) trafficHistory.value.l2tp[user.name] = []
+      const hist = trafficHistory.value.l2tp[user.name]
+      hist.push({ ts, rx: user.rx, tx: user.tx })
+      if (hist.length > MAX_HISTORY) hist.splice(0, hist.length - MAX_HISTORY)
+    }
+  } catch {}
+}
+
+function lastTrafficRate(type, name, field) {
+  const hist = trafficHistory.value[type]?.[name] || []
+  if (hist.length < 2) return 0
+  const a = hist[hist.length - 2], b = hist[hist.length - 1]
+  const dt = Math.max((b.ts - a.ts) / 1000, 1)
+  return Math.max((b[field] - a[field]) / dt, 0)
+}
+
+function lastTrafficTotal(type, name, field) {
+  const hist = trafficHistory.value[type]?.[name] || []
+  return hist.length ? hist[hist.length - 1][field] : 0
+}
+
+function formatBytes(bytes) {
+  if (bytes < 1024)       return `${bytes.toFixed(0)} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} K`
+  return `${(bytes / 1024 / 1024).toFixed(2)} M`
+}
+
+function openTrafficModal(type, name) {
+  trafficModal.value = { type, name }
 }
 
 async function showMikrotikConfig(type, name) {
@@ -763,7 +954,15 @@ function copyText(txt) {
   navigator.clipboard.writeText(txt).then(() => showToast('Disalin ke clipboard'))
 }
 
-onMounted(fetchAll)
+onMounted(async () => {
+  await fetchAll()
+  await fetchTraffic()
+  trafficTimer = setInterval(fetchTraffic, 30_000)
+})
+
+onUnmounted(() => {
+  if (trafficTimer) clearInterval(trafficTimer)
+})
 </script>
 
 <style scoped>
@@ -944,6 +1143,37 @@ onMounted(fetchAll)
   background: var(--bg-elevated); border-left: 1px solid var(--border);
   border-radius: 0 8px 8px 0; pointer-events: none;
 }
+
+/* ─── Traffic cell ─── */
+.rf-traffic-cell {
+  display: flex; flex-direction: column; gap: 3px;
+  cursor: pointer; padding: 4px 6px; border-radius: 6px;
+  transition: background .15s;
+}
+.rf-traffic-cell:hover { background: var(--bg-elevated); }
+.rf-traffic-nums { display: flex; flex-direction: column; gap: 1px; }
+.rf-dn { font-size: 10px; font-weight: 600; color: var(--success); font-family: 'JetBrains Mono', monospace; }
+.rf-up { font-size: 10px; font-weight: 600; color: var(--warning); font-family: 'JetBrains Mono', monospace; }
+
+/* ─── Traffic modal stats ─── */
+.rf-traffic-stats {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  gap: 12px; margin-bottom: 20px;
+}
+.rf-tstat {
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: 10px; padding: 12px 14px;
+}
+.rf-tstat-label { font-size: 10px; color: var(--text-muted); font-weight: 500; text-transform: uppercase; letter-spacing: .04em; }
+.rf-tstat-val { font-size: 16px; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: var(--text-primary); margin-top: 4px; }
+
+/* ─── Traffic graph ─── */
+.rf-graph-wrap {
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: 10px; padding: 14px; min-height: 130px;
+  display: flex; align-items: center; justify-content: center;
+}
+.rf-graph-empty { color: var(--text-muted); font-size: 13px; }
 
 /* ─── Empty ─── */
 .rf-empty {

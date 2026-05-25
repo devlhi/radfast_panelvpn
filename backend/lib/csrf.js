@@ -30,7 +30,7 @@ function issue(res) {
   const signed = `${raw}.${_hmac(raw)}`
   res.cookie(COOKIE_NAME, signed, {
     httpOnly: false,                  // client JS must read
-    secure:   config.isProd,
+    secure:   config.useHttps,        // hanya true jika HTTPS=true di .env
     sameSite: 'strict',
     path:     '/',
     maxAge:   8 * 60 * 60 * 1000,

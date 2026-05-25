@@ -149,7 +149,10 @@ function makeAction(action) {
         return res.json({ message: `${action} command (Windows dev mode).` })
       }
 
-      await runCmd('systemctl', [action, `genieacs-${name}`])
+      // Start/stop semua 4 services sekaligus
+      for (const svc of ['cwmp', 'nbi', 'fs', 'ui']) {
+        try { await runCmd('systemctl', [action, `genieacs-${name}-${svc}`]) } catch {}
+      }
       audit.record(`instance.${action}`, { name }, req)
       res.json({ message: `Instance ${action}ed.` })
     } catch (e) {
@@ -177,10 +180,12 @@ router.delete(
       if (idx === -1) return res.status(404).json({ message: 'Instance tidak ditemukan.' })
 
       if (!isWin) {
-        const unit = `genieacs-${name}`
-        try { await runCmd('systemctl', ['stop', unit]) } catch {}
-        try { await runCmd('systemctl', ['disable', unit]) } catch {}
-        try { fs.unlinkSync(`/etc/systemd/system/${unit}.service`) } catch {}
+        for (const svc of ['ui', 'cwmp', 'nbi', 'fs']) {
+          const unit = `genieacs-${name}-${svc}`
+          try { await runCmd('systemctl', ['stop', unit]) } catch {}
+          try { await runCmd('systemctl', ['disable', unit]) } catch {}
+          try { fs.unlinkSync(`/etc/systemd/system/${unit}.service`) } catch {}
+        }
         try { await runCmd('systemctl', ['daemon-reload']) } catch {}
       }
 
@@ -194,28 +199,52 @@ router.delete(
 
 // ─── helpers ───────────────────────────────────────────────────────────────
 async function createSystemdUnit(name, uiPort, cwmpPort, db) {
-  // All values were validated by validators above — still defense-in-depth here.
   validateIdent(name, 'instance name')
   validatePort(uiPort); validatePort(cwmpPort)
   if (!/^[a-zA-Z0-9_]+$/.test(db)) throw new Error('invalid db')
 
-  const unit = `[Unit]
-Description=GenieACS Instance - ${name}
+  // Tiap instance punya 4 services:
+  // UI=uiPort, CWMP=cwmpPort, NBI=cwmpPort+10, FS=cwmpPort+20
+  const nbiPort = cwmpPort + 10
+  const fsPort  = cwmpPort + 20
+  const genieEnv = `GENIEACS_MONGODB_CONNECTION_URL=mongodb://127.0.0.1:27017/${db}`
+  const genieBin = '/usr/bin'
+
+  const services = [
+    { svc: 'ui',   bin: 'genieacs-ui',   port: uiPort   },
+    { svc: 'cwmp', bin: 'genieacs-cwmp', port: cwmpPort },
+    { svc: 'nbi',  bin: 'genieacs-nbi',  port: nbiPort  },
+    { svc: 'fs',   bin: 'genieacs-fs',   port: fsPort   },
+  ]
+
+  for (const { svc, bin, port } of services) {
+    const unitName = `genieacs-${name}-${svc}`
+    const unit = `[Unit]
+Description=GenieACS ${svc.toUpperCase()} — instance ${name} (port ${port})
 After=network.target mongod.service
+Wants=mongod.service
 
 [Service]
 Type=simple
 User=genieacs
-ExecStart=/usr/bin/genieacs-nbi --port ${uiPort}
-Environment=GENIEACS_MONGODB_CONNECTION_URL=mongodb://localhost:27017/${db}
+Environment=${genieEnv}
+ExecStart=${genieBin}/${bin} --port ${port}
+WorkingDirectory=/var/lib/genieacs
 Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/genieacs/${unitName}.log
+StandardError=append:/var/log/genieacs/${unitName}.log
 
 [Install]
 WantedBy=multi-user.target
 `
-  fs.writeFileSync(`/etc/systemd/system/genieacs-${name}.service`, unit, { mode: 0o644 })
+    fs.writeFileSync(`/etc/systemd/system/${unitName}.service`, unit, { mode: 0o644 })
+  }
+
   await runCmd('systemctl', ['daemon-reload'])
-  await runCmd('systemctl', ['enable', `genieacs-${name}`])
+  for (const { svc } of services) {
+    await runCmd('systemctl', ['enable', `genieacs-${name}-${svc}`])
+  }
 }
 
 module.exports = router

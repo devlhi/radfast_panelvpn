@@ -88,18 +88,32 @@ function scanSystemdInstances() {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// GET /api/instances — registry + auto-detect dari systemd (hybrid)
+// GET /api/instances — registry + auto-detect systemd (hybrid) + auto-repair
 // ═════════════════════════════════════════════════════════════════════════
 router.get('/', (req, res) => {
-  const registry = readRegistry()
+  let registry = readRegistry()
 
-  // Auto-detect dari systemd, merge jika belum ada di registry
+  // ── Auto-repair: isi port null yang tersimpan ──────────────────────────
+  let repaired = false
+  registry = registry.map(inst => {
+    if (!inst.ui_port || !inst.cwmp_port) {
+      const others = registry.filter(i => i.name !== inst.name)
+      if (!inst.ui_port)   inst.ui_port   = nextAvailablePort(others, 'ui_port',   3000)
+      if (!inst.cwmp_port) inst.cwmp_port = nextAvailablePort(others, 'cwmp_port', 7547)
+      repaired = true
+    }
+    return inst
+  })
+  if (repaired) {
+    try { writeRegistry(registry) } catch {}
+  }
+
+  // ── Auto-detect dari systemd, merge jika belum ada di registry ─────────
   const systemd = scanSystemdInstances()
   const merged = [...registry]
   let changed = false
   for (const svc of systemd) {
     if (!merged.find(i => i.name === svc.name)) {
-      // Instance baru dari systemd — tambah ke registry otomatis
       merged.push({ ...svc, created: new Date().toISOString() })
       changed = true
     }

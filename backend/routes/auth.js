@@ -20,7 +20,9 @@ const DUMMY_HASH = '$2b$12$CwTycUXWue0Thq9StjUM0uJ8xY9YwR1jQz0xY9YwR1jQz0xY9YwR1
 
 const COOKIE_OPTS = () => ({
   httpOnly: true,
-  secure:   config.isProd,
+  // secure hanya aktif jika HTTPS=true di .env
+  // jangan pakai isProd — production HTTP bikin browser reject cookie (tidak dikirim balik → logout terus)
+  secure:   config.useHttps,
   sameSite: 'strict',
   path:     '/',
   maxAge:   8 * 60 * 60 * 1000,

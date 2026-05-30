@@ -137,7 +137,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(e, i) in events" :key="i" :class="rowClass(e)">
+          <tr v-for="(e, i) in pagedEvents" :key="i" :class="rowClass(e)">
             <td class="mono small">{{ formatTs(e.ts) }}</td>
             <td><span class="tag" :class="catClass(e.category)">{{ e.category }}</span></td>
             <td class="mono">{{ e.score }}</td>
@@ -155,6 +155,17 @@
           </tr>
         </tbody>
       </table>
+      <div v-if="events.length > pageSize" class="rf-pagination">
+        <button class="rf-page-btn" :disabled="page <= 1" @click="setPage(1)">«</button>
+        <button class="rf-page-btn" :disabled="page <= 1" @click="setPage(page - 1)">‹</button>
+        <template v-for="p in paginationPages" :key="p">
+          <span v-if="p === '...'" class="rf-page-dots">…</span>
+          <button v-else class="rf-page-btn rf-page-num" :class="{ active: p === page }" @click="setPage(p)">{{ p }}</button>
+        </template>
+        <button class="rf-page-btn" :disabled="page >= totalPages" @click="setPage(page + 1)">›</button>
+        <button class="rf-page-btn" :disabled="page >= totalPages" @click="setPage(totalPages)">»</button>
+        <span class="rf-page-info">{{ events.length }} total · {{ (page-1)*pageSize + 1 }}–{{ Math.min(page*pageSize, events.length) }}</span>
+      </div>
     </div>
 
     <!-- ═══ Detail modal ═══ -->
@@ -214,7 +225,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import axios from 'axios'
 
 const events  = ref([])
@@ -229,6 +240,27 @@ const filterTag = ref('')
 
 const selected = ref(null)
 const decoded  = reactive({ query: '', body: '' })
+
+// ── Pagination (events table) ──────────────────────────────────────────────
+const page     = ref(1)
+const pageSize = ref(15)
+const totalPages = computed(() => Math.max(1, Math.ceil(events.value.length / pageSize.value)))
+const pagedEvents = computed(() => {
+  if (page.value > totalPages.value) page.value = totalPages.value
+  const start = (page.value - 1) * pageSize.value
+  return events.value.slice(start, start + pageSize.value)
+})
+function setPage(next) { page.value = Math.min(Math.max(1, next), totalPages.value) }
+const paginationPages = computed(() => {
+  const total = totalPages.value, cur = page.value
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1)
+  const pages = [1]
+  if (cur > 3) pages.push('...')
+  for (let i = Math.max(2, cur - 1); i <= Math.min(total - 1, cur + 1); i++) pages.push(i)
+  if (cur < total - 2) pages.push('...')
+  pages.push(total)
+  return pages
+})
 
 let timer = null
 
@@ -298,6 +330,7 @@ function actionClass(e) {
 }
 function rowClass(e) { return e.category === 'critical' ? 'row-critical' : '' }
 
+watch([filterMinScore, filterIp, filterTag], () => { page.value = 1 })
 watch(autoRefresh, (v) => {
   if (v) timer = setInterval(load, 5000)
   else { clearInterval(timer); timer = null }
@@ -390,4 +423,35 @@ onBeforeUnmount(() => clearInterval(timer))
 .codebox { background: rgba(15,23,42,.06); border: 1px solid var(--border); border-radius: 8px; padding: 10px; font-size: 11.5px; font-family: ui-monospace, monospace; white-space: pre-wrap; word-break: break-all; max-height: 240px; overflow: auto; }
 .codebox.danger { background: rgba(239,68,68,.08); border-color: rgba(239,68,68,.3); color: #b91c1c; }
 .hint { font-size: 11.5px; color: var(--text-muted); margin: 8px 0 0; padding: 8px; background: rgba(245,158,11,.08); border: 1px solid rgba(245,158,11,.2); border-radius: 8px; }
+
+/* ─── Pagination ─── */
+.rf-pagination {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+.rf-page-btn {
+  min-width: 30px;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.rf-page-btn:hover:not(:disabled) { background: rgba(148,163,184,.1); color: var(--text-primary); }
+.rf-page-btn:disabled { opacity: .45; cursor: not-allowed; }
+.rf-page-num.active { background: #6366f1; color: #fff; border-color: #6366f1; }
+.rf-page-dots { padding: 0 3px; color: var(--text-muted); }
+.rf-page-info {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
 </style>

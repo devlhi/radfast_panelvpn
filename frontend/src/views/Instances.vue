@@ -70,7 +70,7 @@
                 </div>
               </td>
             </tr>
-            <tr v-for="inst in filtered" :key="inst.name">
+            <tr v-for="inst in paged" :key="inst.name">
               <td>
                 <div class="rf-cell-instance">
                   <div class="avatar" style="width:34px;height:34px;font-size:13px"
@@ -84,7 +84,7 @@
                 </div>
               </td>
               <td>
-                <a :href="`http://localhost:${inst.ui_port}`" target="_blank" class="rf-port-link">
+                <a :href="instanceUrl(inst)" target="_blank" rel="noopener" class="rf-port-link" :title="instanceUrl(inst)">
                   <code>{{ inst.ui_port }}</code>
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
                 </a>
@@ -128,6 +128,32 @@
         </table>
       </div>
     </article>
+
+    <!-- ═══ Pagination ═══ -->
+    <div v-if="filtered.length > pageSize" class="rf-pagination">
+      <button class="rf-page-btn" :disabled="page <= 1" @click="setPage(1)" title="First">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M11 17l-5-5 5-5v10zM18 17l-5-5 5-5v10z"/></svg>
+      </button>
+      <button class="rf-page-btn" :disabled="page <= 1" @click="setPage(page - 1)" title="Prev">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M14 17l-5-5 5-5v10z"/></svg>
+      </button>
+
+      <template v-for="p in paginationPages" :key="p">
+        <span v-if="p === '...'" class="rf-page-dots">…</span>
+        <button v-else class="rf-page-btn rf-page-num" :class="{ active: p === page }" @click="setPage(p)">
+          {{ p }}
+        </button>
+      </template>
+
+      <button class="rf-page-btn" :disabled="page >= totalPages" @click="setPage(page + 1)" title="Next">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M10 7l5 5-5 5V7z"/></svg>
+      </button>
+      <button class="rf-page-btn" :disabled="page >= totalPages" @click="setPage(totalPages)" title="Last">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M13 17l5-5-5-5v10zM6 17l5-5-5-5v10z"/></svg>
+      </button>
+
+      <span class="rf-page-info">{{ filtered.length }} total · {{ (page-1)*pageSize + 1 }}–{{ Math.min(page*pageSize, filtered.length) }}</span>
+    </div>
 
     <!-- ═══ Add Modal ═══ -->
     <Transition name="modal">
@@ -225,7 +251,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import axios from 'axios'
 
 const instances = ref([])
@@ -237,6 +263,18 @@ const addError  = ref('')
 const deleteTarget = ref('')
 const search    = ref('')
 const form      = ref({ name: '' })
+
+// ── Pagination ─────────────────────────────────────────────────────────────
+const page     = ref(1)
+const pageSize = ref(10)
+
+// ── URL builder: pakai IP asli dari registry, fallback ke host dashboard ────
+function instanceUrl(inst) {
+  if (!inst.ui_port) return '#'
+  const host = inst.ip || window.location.hostname
+  const proto = window.location.protocol === 'https:' ? 'https:' : 'http:'
+  return `${proto}//${host}:${inst.ui_port}`
+}
 
 // ── Name validation ──────────────────────────────────────────────────────
 const isValidName = computed(() => /^[a-z][a-z0-9-]{0,30}$/.test(form.value.name))
@@ -275,8 +313,30 @@ const filtered    = computed(() => {
     i.name.toLowerCase().includes(q) ||
     String(i.ui_port).includes(q) ||
     String(i.cwmp_port).includes(q) ||
+    (i.ip || '').toLowerCase().includes(q) ||
     (i.db || '').toLowerCase().includes(q),
   )
+})
+const totalPages = computed(() => Math.max(1, Math.ceil(filtered.value.length / pageSize.value)))
+const paged = computed(() => {
+  if (page.value > totalPages.value) page.value = totalPages.value
+  const start = (page.value - 1) * pageSize.value
+  return filtered.value.slice(start, start + pageSize.value)
+})
+function setPage(next) {
+  page.value = Math.min(Math.max(1, next), totalPages.value)
+}
+
+const paginationPages = computed(() => {
+  const total = totalPages.value
+  const cur = page.value
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1)
+  const pages = [1]
+  if (cur > 3) pages.push('...')
+  for (let i = Math.max(2, cur - 1); i <= Math.min(total - 1, cur + 1); i++) pages.push(i)
+  if (cur < total - 2) pages.push('...')
+  pages.push(total)
+  return pages
 })
 
 // ── API ───────────────────────────────────────────────────────────────────
@@ -338,6 +398,7 @@ function closeAdd() {
   form.value = { name: '' }
 }
 
+watch(search, () => { page.value = 1 })
 onMounted(fetchInstances)
 </script>
 
@@ -615,4 +676,44 @@ onMounted(fetchInstances)
   line-height: 1.55;
 }
 .rf-confirm strong { color: var(--text-primary); font-weight: 600; }
+
+/* ─── Pagination ─── */
+.rf-pagination {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 4px 2px;
+}
+.rf-page-btn {
+  min-width: 32px;
+  height: 32px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all .15s;
+}
+.rf-page-btn svg { display: block; }
+.rf-page-btn:hover:not(:disabled) { background: var(--bg-elevated); color: var(--text-primary); border-color: var(--border-strong); }
+.rf-page-btn:disabled { opacity: .4; cursor: not-allowed; }
+.rf-page-num.active {
+  background: var(--accent, #605dff);
+  border-color: var(--accent, #605dff);
+  color: #fff;
+}
+.rf-page-dots { padding: 0 4px; color: var(--text-muted); }
+.rf-page-info {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  font-family: 'JetBrains Mono', monospace;
+}
 </style>

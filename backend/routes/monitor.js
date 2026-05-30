@@ -1,7 +1,8 @@
 const express = require('express')
 const os = require('os')
 
-const { runCmdSync } = require('../lib/safeShell')
+const { runCmd, runCmdSync } = require('../lib/safeShell')
+const { param } = require('express-validator')
 
 const router = express.Router()
 const isWin = process.platform === 'win32'
@@ -161,6 +162,42 @@ router.get('/stats', (req, res) => {
 router.get('/network', (req, res) => {
   res.json(getNetworkInfo())
 })
+
+// ─── ACS admin actions ──────────────────────────────────────
+const ACS_REPO = process.env.RADFAST_ACS_REPO || '/opt/radfast_acs'
+
+router.post('/acs/enable-multi-proxy', async (req, res) => {
+  if (isWin) return res.status(501).json({ message: 'Hanya tersedia di Linux.' })
+  try {
+    const { stdout, stderr } = await runCmd('bash', [`${ACS_REPO}/enable-multi-proxy.sh`], { timeout: 180_000 })
+    res.json({ message: 'enable-multi-proxy selesai.', stdout: stdout.slice(-3000), stderr: stderr.slice(-1000) })
+  } catch (e) {
+    res.status(500).json({ message: (e.stderr || e.message || '').slice(-1000) })
+  }
+})
+
+router.post('/processes/:pid/kill',
+  param('pid').isInt({ min: 2, max: 4194304 }).toInt(),
+  async (req, res) => {
+    if (isWin) return res.status(501).json({ message: 'Hanya tersedia di Linux.' })
+    const pid = req.params.pid
+    if (pid === process.ppid || pid === process.pid) {
+      return res.status(400).json({ message: 'Tidak boleh kill proses backend ini.' })
+    }
+    const force = !!req.body?.force
+    const sig = force ? '-9' : '-15'
+    try {
+      await runCmd('kill', [sig, String(pid)], { timeout: 10_000 })
+      res.json({ message: `Signal ${force ? 'SIGKILL' : 'SIGTERM'} dikirim ke PID ${pid}.` })
+    } catch (e) {
+      if ((e.stderr || '').includes('No such process')) {
+        res.json({ message: `PID ${pid} sudah tidak aktif.` })
+      } else {
+        res.status(500).json({ message: (e.stderr || e.message || '').slice(-500) })
+      }
+    }
+  },
+)
 
 const SERVICES = [
   { name: 'genieacs-cwmp', desc: 'TR-069 CWMP Server' },

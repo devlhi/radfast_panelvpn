@@ -189,8 +189,16 @@
               <p>GenieACS &amp; dependencies</p>
             </div>
           </div>
-          <span class="badge badge-muted">{{ services.length }}</span>
+          <div class="rf-head-right">
+            <span class="badge badge-muted">{{ services.length }}</span>
+            <button class="rf-inline-btn" :disabled="acsBusy" @click="runEnableMultiProxy">
+              <svg v-if="!acsBusy" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              {{ acsBusy ? 'Running…' : 'Enable Multi Proxy' }}
+            </button>
+          </div>
         </header>
+        <div v-if="acsErr" class="rf-action-err">{{ acsErr }}</div>
+        <div v-else-if="acsMsg" class="rf-action-ok">{{ acsMsg }}</div>
         <div class="rf-list">
           <div v-if="!services.length" class="rf-empty-row">
             <div class="rf-spinner"></div><span>Memuat services…</span>
@@ -235,6 +243,14 @@
               <span class="rf-proc-cpu">{{ proc.cpu }}%</span>
               <span class="rf-proc-mem">{{ proc.mem }}</span>
             </div>
+            <button
+              class="rf-inline-btn danger"
+              :disabled="killingPid === String(proc.pid)"
+              @click="killProcess(proc)"
+              :title="`Kill PID ${proc.pid}`"
+            >
+              {{ killingPid === String(proc.pid) ? '…' : '✕' }}
+            </button>
           </div>
         </div>
       </article>
@@ -253,6 +269,10 @@ const cpuHistory = ref(Array(30).fill(0))
 const netRxHistory = ref(Array(30).fill(0))
 const netTxHistory = ref(Array(30).fill(0))
 const autoRefresh = ref(true)
+const acsBusy = ref(false)
+const acsMsg = ref('')
+const acsErr = ref('')
+const killingPid = ref('')
 let timer = null
 
 function cpuColor(val) {
@@ -355,6 +375,36 @@ onMounted(async () => {
   await Promise.all([fetchStats(), fetchServices(), fetchProcs()])
   if (autoRefresh.value) startTimer()
 })
+async function runEnableMultiProxy() {
+  acsBusy.value = true
+  acsMsg.value = ''
+  acsErr.value = ''
+  try {
+    const res = await axios.post('/api/monitor/acs/enable-multi-proxy')
+    acsMsg.value = res.data.message || 'Berhasil.'
+  } catch (e) {
+    acsErr.value = e.response?.data?.message || e.message
+  } finally {
+    acsBusy.value = false
+    setTimeout(() => { acsMsg.value = ''; acsErr.value = '' }, 12000)
+    await fetchServices()
+    await fetchProcs()
+  }
+}
+
+async function killProcess(proc) {
+  if (!confirm(`Kill proses ${proc.name} (PID ${proc.pid})?`)) return
+  killingPid.value = String(proc.pid)
+  try {
+    await axios.post(`/api/monitor/processes/${proc.pid}/kill`, { force: true })
+  } catch (e) {
+    console.error(e)
+  } finally {
+    killingPid.value = ''
+    await fetchProcs()
+  }
+}
+
 onUnmounted(stopTimer)
 </script>
 
@@ -467,6 +517,43 @@ onUnmounted(stopTimer)
   font-size: 11px;
   color: var(--text-muted);
   margin-top: 2px;
+}
+.rf-head-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.rf-inline-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 11px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all .15s;
+}
+.rf-inline-btn:hover:not(:disabled) { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+.rf-inline-btn:disabled { opacity: .55; cursor: not-allowed; }
+.rf-inline-btn.danger { border-color: var(--danger); color: var(--danger); }
+.rf-inline-btn.danger:hover:not(:disabled) { background: var(--danger-soft); }
+.rf-action-ok, .rf-action-err {
+  padding: 9px 20px;
+  font-size: 11.5px;
+}
+.rf-action-ok {
+  color: var(--success);
+  background: var(--success-soft);
+  border-bottom: 1px solid var(--border);
+}
+.rf-action-err {
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-bottom: 1px solid var(--border);
 }
 
 /* ─── Modern charts ─── */

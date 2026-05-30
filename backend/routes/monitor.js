@@ -385,6 +385,72 @@ router.get('/acs/memory-limits', (req, res) => {
   }
 })
 
+const ACS_MEMORY_PRESETS = {
+  low:  { label: 'Hemat',       heap: 120, mem: '160M', mpHeap: 192, mpMem: '256M' },
+  bulk: { label: 'Bulk 400 ONT', heap: 256, mem: '320M', mpHeap: 256, mpMem: '384M' },
+  high: { label: 'High 800+',    heap: 320, mem: '448M', mpHeap: 320, mpMem: '512M' },
+}
+
+function patchEnvValue(file, key, value) {
+  let content = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : ''
+  const line = `${key}=${value}`
+  const re = new RegExp(`^${key}=.*$`, 'm')
+  if (re.test(content)) content = content.replace(re, line)
+  else content = content.replace(/\s*$/, `\n${line}\n`)
+  fs.writeFileSync(file, content, { mode: 0o640 })
+}
+
+router.post('/acs/memory-limits/apply', async (req, res) => {
+  if (isWin) return res.status(501).json({ message: 'Hanya tersedia di Linux.' })
+  const presetKey = String(req.body?.preset || 'bulk')
+  const preset = ACS_MEMORY_PRESETS[presetKey]
+  if (!preset) return res.status(400).json({ message: 'Preset tidak valid.' })
+
+  try {
+    const regRaw = fs.existsSync(ACS_REGISTRY) ? fs.readFileSync(ACS_REGISTRY, 'utf8') : ''
+    const users = []
+    for (const line of regRaw.split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed || trimmed.startsWith('#')) continue
+      const uname = trimmed.split(/\s+/)[0]
+      if (uname && /^[a-zA-Z0-9_-]+$/.test(uname) && !users.includes(uname)) users.push(uname)
+    }
+
+    const nodeOpts = `"--max-old-space-size=${preset.heap} --max-semi-space-size=4"`
+    for (const user of users) {
+      const envFile = `${ACS_INSTANCES_DIR}/${user}/.env`
+      patchEnvValue(envFile, 'NODE_OPTIONS', nodeOpts)
+
+      for (const svc of ['cwmp', 'nbi', 'fs', 'ui']) {
+        const unit = `genieacs-${user}-${svc}`
+        const dropinDir = `/etc/systemd/system/${unit}.service.d`
+        fs.mkdirSync(dropinDir, { recursive: true, mode: 0o755 })
+        fs.writeFileSync(`${dropinDir}/limits.conf`, `[Service]\nMemoryAccounting=true\nMemoryMax=${preset.mem}\n`, { mode: 0o644 })
+      }
+    }
+
+    const mpDropinDir = '/etc/systemd/system/genieacs-multi-proxy.service.d'
+    fs.mkdirSync(mpDropinDir, { recursive: true, mode: 0o755 })
+    fs.writeFileSync(`${mpDropinDir}/limits.conf`, `[Service]\nEnvironment=NODE_OPTIONS=--max-old-space-size=${preset.mpHeap} --max-semi-space-size=4\nMemoryAccounting=true\nMemoryMax=${preset.mpMem}\n`, { mode: 0o644 })
+
+    await runCmd('systemctl', ['daemon-reload'], { timeout: 30_000 })
+    const restarted = []
+    for (const user of users) {
+      for (const svc of ['cwmp', 'nbi', 'fs', 'ui']) {
+        const unit = `genieacs-${user}-${svc}`
+        try { await runCmd('systemctl', ['restart', unit], { timeout: 30_000 }); restarted.push(unit) }
+        catch {}
+      }
+    }
+    try { await runCmd('systemctl', ['restart', 'genieacs-multi-proxy'], { timeout: 30_000 }); restarted.push('genieacs-multi-proxy') }
+    catch {}
+
+    res.json({ message: `Limit RAM diubah ke mode ${preset.label}.`, preset: presetKey, restarted })
+  } catch (e) {
+    res.status(500).json({ message: (e.stderr || e.message || '').slice(-1000) })
+  }
+})
+
 // Kill SEMUA proses node sekaligus — kecuali backend ini + pm2 daemon,
 // supaya dashboard tetap hidup. GenieACS/multi-proxy yang dimanage systemd
 // akan otomatis di-restart oleh systemd setelah dibunuh.

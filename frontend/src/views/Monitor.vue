@@ -367,6 +367,26 @@
           </div>
         </header>
 
+        <!-- Preset RAM tombol -->
+        <div class="rf-preset-row">
+          <span class="rf-preset-label">MODE:</span>
+          <button class="rf-preset-btn" :class="{ active: activeMemPreset === 'low' }" :disabled="memApplyBusy" @click="applyMemPreset('low')">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v20M2 12h20"/></svg>
+            Hemat <span>120 / 160 M</span>
+          </button>
+          <button class="rf-preset-btn" :class="{ active: activeMemPreset === 'bulk' }" :disabled="memApplyBusy" @click="applyMemPreset('bulk')">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+            Bulk 400 ONT <span>256 / 320 M</span>
+          </button>
+          <button class="rf-preset-btn" :class="{ active: activeMemPreset === 'high' }" :disabled="memApplyBusy" @click="applyMemPreset('high')">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+            High 800+ <span>320 / 448 M</span>
+          </button>
+          <span v-if="memApplyBusy" class="rf-preset-spinner"></span>
+        </div>
+        <div v-if="memApplyOk" class="rf-action-ok rf-preset-msg">{{ memApplyOk }}</div>
+        <div v-if="memApplyErr" class="rf-action-err rf-preset-msg">{{ memApplyErr }}</div>
+
         <!-- Multi-proxy row -->
         <div v-if="acsLimits.multiProxy" class="rf-mp-row">
           <span class="dot" :class="acsLimits.multiProxy.active ? 'dot-success' : 'dot-muted'"></span>
@@ -445,6 +465,10 @@ const nodeKillErr = ref('')
 const acsLimits = ref({ instances: [], multiProxy: null })
 const limitsBusy = ref(false)
 const limitsErr = ref('')
+const activeMemPreset = ref('bulk')
+const memApplyBusy = ref(false)
+const memApplyOk = ref('')
+const memApplyErr = ref('')
 let timer = null
 
 function cpuColor(val) {
@@ -560,16 +584,45 @@ async function fetchMemProcs() {
   catch (e) { console.error(e) }
 }
 
+function detectLimitPreset(data) {
+  const mpOpts = data.multiProxy?.nodeOptions || ''
+  const heapM = mpOpts.match(/max-old-space-size=(\d+)/)
+  const heap = parseInt(heapM?.[1] || '0')
+  if (heap >= 300) return 'high'
+  if (heap >= 240) return 'bulk'
+  return 'low'
+}
+
 async function fetchAcsLimits() {
   limitsBusy.value = true
   limitsErr.value = ''
   try {
     const res = await axios.get('/api/monitor/acs/memory-limits')
     acsLimits.value = res.data || { instances: [], multiProxy: null }
+    activeMemPreset.value = detectLimitPreset(acsLimits.value)
   } catch (e) {
     limitsErr.value = e.response?.data?.message || e.message
   } finally {
     limitsBusy.value = false
+  }
+}
+
+async function applyMemPreset(key) {
+  const labels = { low: 'Hemat', bulk: 'Bulk 400 ONT', high: 'High 800+' }
+  if (!confirm(`Terapkan mode "${labels[key]}" ke SEMUA instance?\nIni akan restart semua service GenieACS.`)) return
+  memApplyBusy.value = true
+  memApplyOk.value = ''
+  memApplyErr.value = ''
+  try {
+    const res = await axios.post('/api/monitor/acs/memory-limits/apply', { preset: key })
+    memApplyOk.value = res.data?.message || 'Berhasil.'
+    activeMemPreset.value = key
+    await fetchAcsLimits()
+  } catch (e) {
+    memApplyErr.value = e.response?.data?.message || e.message
+  } finally {
+    memApplyBusy.value = false
+    setTimeout(() => { memApplyOk.value = ''; memApplyErr.value = '' }, 15000)
   }
 }
 
@@ -1009,6 +1062,78 @@ onUnmounted(stopTimer)
 .rf-full-btn:disabled { opacity: .55; cursor: not-allowed; }
 .rf-full-btn.danger { border-color: var(--danger); color: var(--danger); background: var(--danger-soft); }
 .rf-full-btn.danger:hover:not(:disabled) { background: var(--danger); color: #fff; }
+
+/* ─── ACS Memory Preset bar ─── */
+.rf-preset-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elevated);
+  flex-wrap: wrap;
+}
+.rf-preset-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  margin-right: 4px;
+  white-space: nowrap;
+}
+.rf-preset-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 13px;
+  border-radius: 8px;
+  border: 1.5px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all .15s;
+  white-space: nowrap;
+  line-height: 1.3;
+}
+.rf-preset-btn span {
+  font-weight: 600;
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: 'JetBrains Mono', monospace;
+}
+.rf-preset-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.rf-preset-btn:hover:not(:disabled) span {
+  color: var(--accent);
+}
+.rf-preset-btn.active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 0 0 2px rgba(99,102,241,.18);
+}
+.rf-preset-btn.active span {
+  color: rgba(255,255,255,.8);
+}
+.rf-preset-btn:disabled { opacity: .55; cursor: not-allowed; }
+.rf-preset-spinner {
+  display: inline-block;
+  width: 14px; height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: rf-spin .6s linear infinite;
+}
+@keyframes rf-spin { to { transform: rotate(360deg); } }
+.rf-preset-msg {
+  border-radius: 0 0 0 0;
+}
 
 /* ─── ACS Memory Limits ─── */
 .rf-mp-row {

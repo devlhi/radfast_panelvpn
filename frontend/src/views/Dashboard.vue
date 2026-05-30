@@ -261,6 +261,32 @@ const secEvents  = ref([])
 const secLoading = ref(true)
 const secAlert   = computed(() => secStats.value.critical > 0 || secStats.value.bans > 0)
 let secTimer = null
+let statsStream = null
+
+function applyQuickStats(data) {
+  if (!data) return
+  cpuVal.value = Math.round(data.cpu || 0)
+  ramVal.value = Math.round(data.ram || 0)
+}
+async function loadQuickStats() {
+  try {
+    const r = await axios.get('/api/monitor/quick')
+    applyQuickStats(r.data)
+  } catch (e) { console.debug('quick stats unavailable', e.message) }
+}
+function startStatsStream() {
+  if (statsStream) return
+  try {
+    statsStream = new EventSource('/api/monitor/stream', { withCredentials: true })
+    statsStream.onmessage = (ev) => {
+      try { applyQuickStats(JSON.parse(ev.data)) } catch {}
+    }
+    statsStream.onerror = () => { }
+  } catch (e) { console.debug('stats stream unavailable', e.message) }
+}
+function stopStatsStream() {
+  if (statsStream) { statsStream.close(); statsStream = null }
+}
 
 const activeCount = computed(() => instances.value.filter(i => i.active).length)
 const todayDate = computed(() => new Date().toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }))
@@ -377,14 +403,12 @@ const healthMetrics = computed(() => [
 ])
 
 onMounted(async () => {
+  // Initial fetch + start SSE real-time stream
+  await loadQuickStats()
+  startStatsStream()
   try {
-    const [instRes, sysRes] = await Promise.all([
-      axios.get('/api/instances'),
-      axios.get('/api/monitor/quick'),
-    ])
+    const instRes = await axios.get('/api/instances')
     instances.value = instRes.data
-    cpuVal.value    = sysRes.data?.cpu || 0
-    ramVal.value    = sysRes.data?.ram || 0
   } catch (e) {
     console.error(e)
   } finally {
@@ -399,6 +423,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   if (secTimer) clearInterval(secTimer)
   secTimer = null
+  stopStatsStream()
 })
 
 async function loadSecurity() {

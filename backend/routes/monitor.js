@@ -148,6 +148,37 @@ router.get('/quick', (req, res) => {
   res.json({ cpu: getCpuPercent(), ram: getRamInfo().ram })
 })
 
+// ─── SSE real-time stream: CPU/RAM/Net dari VPS asli ──────────────────────
+// EventSource browser otomatis reconnect + kirim cookie auth (same-origin).
+router.get('/stream', (req, res) => {
+  res.writeHead(200, {
+    'Content-Type':  'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    'Connection':    'keep-alive',
+    'X-Accel-Buffering': 'no',   // nginx jangan buffer
+  })
+  res.write(':ok\n\n')           // komentar awal supaya browser connect langsung
+
+  let alive = true
+  req.on('close', () => { alive = false })
+
+  send()  // kirim segera
+
+  const iv = setInterval(() => { if (alive) send() }, 2000)
+  req.on('close', () => clearInterval(iv))
+
+  function send() {
+    try {
+      const cpu = getCpuPercent()
+      const mem = getRamInfo()
+      const net = isWin ? [] : getNetworkInfo()
+      const disk = getDiskInfo()
+      const payload = JSON.stringify({ cpu, ...mem, disk: disk.disk, disk_used: disk.disk_used, disk_total: disk.disk_total, net, uptime: getUptime(), load: getLoad(), ts: Date.now() })
+      res.write(`data: ${payload}\n\n`)
+    } catch {}
+  }
+})
+
 router.get('/stats', (req, res) => {
   res.json({
     cpu: getCpuPercent(),

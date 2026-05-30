@@ -128,7 +128,7 @@
                   </div>
                 </td>
               </tr>
-              <tr v-for="user in l2tpUsers" :key="user.username">
+              <tr v-for="user in pagedL2tpUsers" :key="user.username">
                 <td>
                   <div class="rf-cell-user">
                     <div class="avatar" style="width:34px;height:34px;font-size:13px"
@@ -195,6 +195,27 @@
             </tbody>
           </table>
         </div>
+
+        <!-- L2TP Pagination -->
+        <div v-if="l2tpUsers.length > l2tpPageSize" class="rf-pagination">
+          <button class="rf-page-btn" :disabled="l2tpPage <= 1" @click="setL2tpPage(1)" title="First">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M11 17l-5-5 5-5v10zM18 17l-5-5 5-5v10z"/></svg>
+          </button>
+          <button class="rf-page-btn" :disabled="l2tpPage <= 1" @click="setL2tpPage(l2tpPage - 1)" title="Prev">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M14 17l-5-5 5-5v10z"/></svg>
+          </button>
+          <template v-for="p in l2tpPaginationPages" :key="p">
+            <span v-if="p === '...'" class="rf-page-dots">…</span>
+            <button v-else class="rf-page-btn rf-page-num" :class="{ active: p === l2tpPage }" @click="setL2tpPage(p)">{{ p }}</button>
+          </template>
+          <button class="rf-page-btn" :disabled="l2tpPage >= l2tpTotalPages" @click="setL2tpPage(l2tpPage + 1)" title="Next">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M10 7l5 5-5 5V7z"/></svg>
+          </button>
+          <button class="rf-page-btn" :disabled="l2tpPage >= l2tpTotalPages" @click="setL2tpPage(l2tpTotalPages)" title="Last">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M13 17l5-5-5-5v10zM6 17l5-5-5-5v10z"/></svg>
+          </button>
+          <span class="rf-page-info">{{ l2tpUsers.length }} total · {{ (l2tpPage-1)*l2tpPageSize + 1 }}–{{ Math.min(l2tpPage*l2tpPageSize, l2tpUsers.length) }}</span>
+        </div>
       </article>
     </div>
 
@@ -258,7 +279,7 @@
                   </div>
                 </td>
               </tr>
-              <tr v-for="peer in wgPeers" :key="peer.name">
+              <tr v-for="peer in pagedWgPeers" :key="peer.name">
                 <td>
                   <div class="rf-cell-user">
                     <div class="avatar" style="width:34px;height:34px;font-size:13px"
@@ -318,6 +339,27 @@
               </tr>
             </tbody>
           </table>
+        </div>
+
+        <!-- WireGuard Pagination -->
+        <div v-if="wgPeers.length > wgPageSize" class="rf-pagination">
+          <button class="rf-page-btn" :disabled="wgPage <= 1" @click="setWgPage(1)" title="First">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M11 17l-5-5 5-5v10zM18 17l-5-5 5-5v10z"/></svg>
+          </button>
+          <button class="rf-page-btn" :disabled="wgPage <= 1" @click="setWgPage(wgPage - 1)" title="Prev">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M14 17l-5-5 5-5v10z"/></svg>
+          </button>
+          <template v-for="p in wgPaginationPages" :key="p">
+            <span v-if="p === '...'" class="rf-page-dots">…</span>
+            <button v-else class="rf-page-btn rf-page-num" :class="{ active: p === wgPage }" @click="setWgPage(p)">{{ p }}</button>
+          </template>
+          <button class="rf-page-btn" :disabled="wgPage >= wgTotalPages" @click="setWgPage(wgPage + 1)" title="Next">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M10 7l5 5-5 5V7z"/></svg>
+          </button>
+          <button class="rf-page-btn" :disabled="wgPage >= wgTotalPages" @click="setWgPage(wgTotalPages)" title="Last">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M13 17l5-5-5-5v10zM6 17l5-5-5-5v10z"/></svg>
+          </button>
+          <span class="rf-page-info">{{ wgPeers.length }} total · {{ (wgPage-1)*wgPageSize + 1 }}–{{ Math.min(wgPage*wgPageSize, wgPeers.length) }}</span>
         </div>
       </article>
     </div>
@@ -733,7 +775,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, defineComponent, h } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, defineComponent, h } from 'vue'
 import axios from 'axios'
 
 // ── Inline sparkline component (mini, 60×20px) ───────────────────────────
@@ -816,6 +858,51 @@ const visiblePass  = ref('')
 const rosConfig    = ref(null)
 const copied       = ref(false)
 const toastMsg     = ref('Disalin ke clipboard')
+
+// ── Pagination: L2TP ─────────────────────────────────────────────────────
+const l2tpPage     = ref(1)
+const l2tpPageSize  = ref(10)
+const l2tpTotalPages = computed(() => Math.max(1, Math.ceil(l2tpUsers.value.length / l2tpPageSize.value)))
+const pagedL2tpUsers = computed(() => {
+  if (l2tpPage.value > l2tpTotalPages.value) l2tpPage.value = l2tpTotalPages.value
+  const s = (l2tpPage.value - 1) * l2tpPageSize.value
+  return l2tpUsers.value.slice(s, s + l2tpPageSize.value)
+})
+function setL2tpPage(next) { l2tpPage.value = Math.min(Math.max(1, next), l2tpTotalPages.value) }
+const l2tpPaginationPages = computed(() => {
+  const t = l2tpTotalPages.value, c = l2tpPage.value
+  if (t <= 7) return Array.from({ length: t }, (_, i) => i + 1)
+  const p = [1]
+  if (c > 3) p.push('...')
+  for (let i = Math.max(2, c - 1); i <= Math.min(t - 1, c + 1); i++) p.push(i)
+  if (c < t - 2) p.push('...')
+  p.push(t)
+  return p
+})
+
+// ── Pagination: WireGuard ────────────────────────────────────────────────
+const wgPage       = ref(1)
+const wgPageSize   = ref(10)
+const wgTotalPages  = computed(() => Math.max(1, Math.ceil(wgPeers.value.length / wgPageSize.value)))
+const pagedWgPeers  = computed(() => {
+  if (wgPage.value > wgTotalPages.value) wgPage.value = wgTotalPages.value
+  const s = (wgPage.value - 1) * wgPageSize.value
+  return wgPeers.value.slice(s, s + wgPageSize.value)
+})
+function setWgPage(next) { wgPage.value = Math.min(Math.max(1, next), wgTotalPages.value) }
+const wgPaginationPages = computed(() => {
+  const t = wgTotalPages.value, c = wgPage.value
+  if (t <= 7) return Array.from({ length: t }, (_, i) => i + 1)
+  const p = [1]
+  if (c > 3) p.push('...')
+  for (let i = Math.max(2, c - 1); i <= Math.min(t - 1, c + 1); i++) p.push(i)
+  if (c < t - 2) p.push('...')
+  p.push(t)
+  return p
+})
+
+// Reset to page 1 saat tab berubah
+watch(tab, () => { l2tpPage.value = 1; wgPage.value = 1 })
 
 const openInstallL2tp = ref(false)
 const openAddL2tp     = ref(false)
@@ -1466,6 +1553,47 @@ onUnmounted(() => {
   max-height: 360px;
   overflow-y: auto;
   line-height: 1.65;
+}
+
+/* ─── Pagination ─── */
+.rf-pagination {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 12px 16px 16px;
+  border-top: 1px solid var(--border);
+}
+.rf-page-btn {
+  min-width: 32px;
+  height: 32px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all .15s;
+}
+.rf-page-btn svg { display: block; }
+.rf-page-btn:hover:not(:disabled) { background: var(--bg-elevated); color: var(--text-primary); border-color: var(--border-strong); }
+.rf-page-btn:disabled { opacity: .4; cursor: not-allowed; }
+.rf-page-num.active {
+  background: var(--accent, #605dff);
+  border-color: var(--accent, #605dff);
+  color: #fff;
+}
+.rf-page-dots { padding: 0 4px; color: var(--text-muted); }
+.rf-page-info {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  font-family: 'JetBrains Mono', monospace;
 }
 
 /* ─── Toast ─── */

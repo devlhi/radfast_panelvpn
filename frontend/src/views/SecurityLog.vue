@@ -89,7 +89,7 @@
       <table class="rf-table">
         <thead><tr><th>IP</th><th>Reason</th><th>Expires</th><th>Retry After</th><th></th></tr></thead>
         <tbody>
-          <tr v-for="b in bans" :key="b.ip">
+          <tr v-for="b in pagedBans" :key="b.ip">
             <td class="mono">{{ b.ip }}</td>
             <td><span class="tag tag-danger">{{ b.reason }}</span></td>
             <td>{{ formatTs(b.until) }}</td>
@@ -100,6 +100,26 @@
           </tr>
         </tbody>
       </table>
+      <!-- Bans Pagination -->
+      <div v-if="bans.length > banPageSize" class="rf-pagination" style="margin-top:12px">
+        <button class="rf-page-btn" :disabled="banPage <= 1" @click="setBanPage(1)" title="First">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M11 17l-5-5 5-5v10zM18 17l-5-5 5-5v10z"/></svg>
+        </button>
+        <button class="rf-page-btn" :disabled="banPage <= 1" @click="setBanPage(banPage - 1)" title="Prev">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M14 17l-5-5 5-5v10z"/></svg>
+        </button>
+        <template v-for="p in banPaginationPages" :key="p">
+          <span v-if="p === '...'" class="rf-page-dots">…</span>
+          <button v-else class="rf-page-btn rf-page-num" :class="{ active: p === banPage }" @click="setBanPage(p)">{{ p }}</button>
+        </template>
+        <button class="rf-page-btn" :disabled="banPage >= banTotalPages" @click="setBanPage(banPage + 1)" title="Next">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M10 7l5 5-5 5V7z"/></svg>
+        </button>
+        <button class="rf-page-btn" :disabled="banPage >= banTotalPages" @click="setBanPage(banTotalPages)" title="Last">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M13 17l5-5-5-5v10zM6 17l5-5-5-5v10z"/></svg>
+        </button>
+        <span class="rf-page-info">{{ bans.length }} bans · {{ (banPage-1)*banPageSize + 1 }}–{{ Math.min(banPage*banPageSize, bans.length) }}</span>
+      </div>
     </div>
 
     <!-- ═══ Filters ═══ -->
@@ -259,6 +279,27 @@ const paginationPages = computed(() => {
   for (let i = Math.max(2, cur - 1); i <= Math.min(total - 1, cur + 1); i++) pages.push(i)
   if (cur < total - 2) pages.push('...')
   pages.push(total)
+  return pages
+})
+
+// ── Pagination (bans table) ────────────────────────────────────────────────
+const banPage      = ref(1)
+const banPageSize  = ref(10)
+const banTotalPages = computed(() => Math.max(1, Math.ceil(bans.value.length / banPageSize.value)))
+const pagedBans = computed(() => {
+  if (banPage.value > banTotalPages.value) banPage.value = banTotalPages.value
+  const s = (banPage.value - 1) * banPageSize.value
+  return bans.value.slice(s, s + banPageSize.value)
+})
+function setBanPage(next) { banPage.value = Math.min(Math.max(1, next), banTotalPages.value) }
+const banPaginationPages = computed(() => {
+  const t = banTotalPages.value, c = banPage.value
+  if (t <= 7) return Array.from({ length: t }, (_, i) => i + 1)
+  const pages = [1]
+  if (c > 3) pages.push('...')
+  for (let i = Math.max(2, c - 1); i <= Math.min(t - 1, c + 1); i++) pages.push(i)
+  if (c < t - 2) pages.push('...')
+  pages.push(t)
   return pages
 })
 

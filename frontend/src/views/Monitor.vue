@@ -5,8 +5,8 @@
     <header class="rf-mon-tool">
       <div class="rf-mon-tool-left">
         <span class="dot" :class="autoRefresh ? 'dot-success' : 'dot-muted'"></span>
-        <span class="rf-mon-status">{{ autoRefresh ? 'Live' : 'Paused' }}</span>
-        <span class="rf-mon-meta">{{ autoRefresh ? 'Update tiap 3 detik' : 'Real-time monitoring dihentikan' }}</span>
+        <span class="rf-mon-status">{{ autoRefresh ? (streamLive ? 'Live · Realtime' : 'Live') : 'Paused' }}</span>
+        <span class="rf-mon-meta">{{ autoRefresh ? (streamLive ? 'Streaming langsung dari VPS' : 'Update tiap 5 detik') : 'Real-time monitoring dihentikan' }}</span>
       </div>
       <button @click="toggleAuto" class="rf-mon-toggle" :class="{ 'is-on': autoRefresh }">
         <svg v-if="autoRefresh" width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
@@ -553,20 +553,53 @@ function areaPath(points, maxVal = 100) {
   return `${line} L${endX} ${h} L0 ${h} Z`
 }
 
+function applyStatsPayload(data) {
+  stats.value = data
+
+  cpuHistory.value.push(data.cpu || 0)
+  if (cpuHistory.value.length > 30) cpuHistory.value.shift()
+
+  const net = (data.net || [])[0] || { rx_sec: 0, tx_sec: 0 }
+  netRxHistory.value.push(net.rx_sec || 0)
+  netTxHistory.value.push(net.tx_sec || 0)
+  if (netRxHistory.value.length > 30) netRxHistory.value.shift()
+  if (netTxHistory.value.length > 30) netTxHistory.value.shift()
+}
+
+// Fallback polling (kalau SSE gagal connect)
 async function fetchStats() {
   try {
     const res = await axios.get('/api/monitor/stats')
-    stats.value = res.data
-
-    cpuHistory.value.push(res.data.cpu || 0)
-    if (cpuHistory.value.length > 30) cpuHistory.value.shift()
-
-    const net = (res.data.net || [])[0] || { rx_sec: 0, tx_sec: 0 }
-    netRxHistory.value.push(net.rx_sec || 0)
-    netTxHistory.value.push(net.tx_sec || 0)
-    if (netRxHistory.value.length > 30) netRxHistory.value.shift()
-    if (netTxHistory.value.length > 30) netTxHistory.value.shift()
+    applyStatsPayload(res.data)
   } catch (e) { console.error(e) }
+}
+
+// ── Real-time stream (Server-Sent Events) dari VPS asli ──────────────────
+let es = null
+const streamLive = ref(false)
+function startStream() {
+  if (es) return
+  try {
+    // EventSource same-origin otomatis kirim cookie auth
+    es = new EventSource('/api/monitor/stream', { withCredentials: true })
+    es.onmessage = (ev) => {
+      try {
+        const data = JSON.parse(ev.data)
+        applyStatsPayload(data)
+        streamLive.value = true
+      } catch {}
+    }
+    es.onerror = () => {
+      // koneksi putus → fallback ke polling sampai reconnect
+      streamLive.value = false
+    }
+  } catch {
+    streamLive.value = false
+  }
+}
+function stopStream() {
+  if (es) { es.close(); es = null }
+  streamLive.value = false
 }
 
 async function fetchServices() {
@@ -628,9 +661,14 @@ async function applyMemPreset(key) {
 
 function startTimer() {
   if (timer) return
-  timer = setInterval(async () => { await fetchStats(); await fetchProcs(); await fetchMemProcs(); await fetchAcsLimits() }, 3000)
+  startStream()  // CPU/RAM/Net real-time via SSE
+  // Poll proses/services/limit lebih jarang (data ini tidak high-frequency)
+  timer = setInterval(async () => {
+    if (!streamLive.value) await fetchStats()  // fallback bila SSE mati
+    await fetchProcs(); await fetchMemProcs(); await fetchAcsLimits()
+  }, 5000)
 }
-function stopTimer() { clearInterval(timer); timer = null }
+function stopTimer() { clearInterval(timer); timer = null; stopStream() }
 function toggleAuto() {
   autoRefresh.value = !autoRefresh.value
   autoRefresh.value ? startTimer() : stopTimer()
@@ -694,7 +732,7 @@ async function killAllNode() {
   }
 }
 
-onUnmounted(stopTimer)
+onUnmounted(() => { stopTimer(); stopStream() })
 </script>
 
 <style scoped>

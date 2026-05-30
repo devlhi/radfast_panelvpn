@@ -1,5 +1,6 @@
 const express = require('express')
 const os = require('os')
+const fs = require('fs')
 
 const { runCmd, runCmdSync } = require('../lib/safeShell')
 const { param } = require('express-validator')
@@ -16,20 +17,121 @@ function formatBytes(bytes) {
 
 function safe(fn, fallback) { try { return fn() } catch { return fallback } }
 
-function getCpuPercent() {
-  // Pure-JS fallback: works everywhere, no shell.
-  return safe(() => {
-    const cpus = os.cpus()
-    let totalIdle = 0, totalTick = 0
-    for (const cpu of cpus) {
-      for (const t in cpu.times) totalTick += cpu.times[t]
-      totalIdle += cpu.times.idle
-    }
-    return Math.round(100 - (totalIdle / totalTick) * 100)
-  }, 0)
+function readFileSafe(p) { try { return fs.readFileSync(p, 'utf8') } catch { return '' } }
+function firstFileNum(paths) {
+  for (const p of paths) {
+    const v = readFileSafe(p).trim()
+    if (v !== '') { const n = Number(v.split(/\s+/)[0]); if (Number.isFinite(n)) return n }
+  }
+  return null
 }
 
+// ── Jumlah CPU yang di-assign ke container (cgroup quota) ────────────────
+// Untuk LXC/Proxmox, jumlah core efektif = quota/period. Fallback ke os.cpus().
+function getCpuCount() {
+  return safe(() => {
+    // cgroup v2
+    const v2 = readFileSafe('/sys/fs/cgroup/cpu.max').trim()
+    if (v2) {
+      const [q, p] = v2.split(/\s+/)
+      if (q !== 'max') { const n = Number(q) / Number(p || 100000); if (n > 0) return n }
+    }
+    // cgroup v1
+    const quota  = firstFileNum(['/sys/fs/cgroup/cpu/cpu.cfs_quota_us'])
+    const period = firstFileNum(['/sys/fs/cgroup/cpu/cpu.cfs_period_us'])
+    if (quota && quota > 0 && period && period > 0) { const n = quota / period; if (n > 0) return n }
+    return os.cpus().length || 1
+  }, os.cpus().length || 1)
+}
+
+// ── CPU% berbasis cgroup usage (akurat utk LXC/Proxmox) ──────────────────
+// Baca usage_usec (cgroup v2) atau usage (ns, cgroup v1), hitung delta vs
+// wall-clock × jumlah core. Fallback ke /proc/stat (os.cpus) bila tak ada.
+let _prevCpu = null      // { idle, total }  — fallback /proc/stat
+let _prevCg  = null      // { usageUs, ts }   — cgroup
+let _lastCpuPct = 0
+
+function readCgroupCpuUsageUs() {
+  // cgroup v2: cpu.stat → "usage_usec N"
+  const v2 = readFileSafe('/sys/fs/cgroup/cpu.stat')
+  if (v2) {
+    const m = v2.match(/usage_usec\s+(\d+)/)
+    if (m) return Number(m[1])
+  }
+  // cgroup v1: cpuacct.usage (nanoseconds)
+  const v1 = firstFileNum(['/sys/fs/cgroup/cpuacct/cpuacct.usage', '/sys/fs/cgroup/cpu,cpuacct/cpuacct.usage'])
+  if (v1 != null) return Math.round(v1 / 1000)   // ns → us
+  return null
+}
+
+function getCpuPercent() {
+  return safe(() => {
+    // 1) Coba cgroup usage (mencerminkan utilisasi container, cocok dgn Proxmox)
+    const usageUs = readCgroupCpuUsageUs()
+    if (usageUs != null) {
+      const ts = Date.now()
+      const prev = _prevCg
+      _prevCg = { usageUs, ts }
+      if (prev) {
+        const dUsage = usageUs - prev.usageUs           // microseconds CPU time
+        const dWall  = (ts - prev.ts) * 1000            // ms → us wall clock
+        const cores  = getCpuCount()
+        if (dWall > 0 && cores > 0) {
+          const pct = Math.round((dUsage / (dWall * cores)) * 100)
+          _lastCpuPct = Math.max(0, Math.min(100, pct))
+          return _lastCpuPct
+        }
+      }
+      return _lastCpuPct   // sampel pertama
+    }
+
+    // 2) Fallback: /proc/stat via os.cpus() (delta)
+    const cpus = os.cpus()
+    let idle = 0, total = 0
+    for (const cpu of cpus) {
+      for (const t in cpu.times) total += cpu.times[t]
+      idle += cpu.times.idle
+    }
+    const prev = _prevCpu
+    _prevCpu = { idle, total }
+    if (!prev) return _lastCpuPct
+    const dTotal = total - prev.total
+    const dIdle  = idle  - prev.idle
+    if (dTotal <= 0) return _lastCpuPct
+    const pct = Math.round((1 - dIdle / dTotal) * 100)
+    _lastCpuPct = Math.max(0, Math.min(100, pct))
+    return _lastCpuPct
+  }, _lastCpuPct)
+}
+
+// ── RAM + Swap dari /proc/meminfo (akurat utk container) ─────────────────
 function getRamInfo() {
+  // Linux: /proc/meminfo lebih akurat utk LXC (os.freemem bisa salah baca host)
+  if (!isWin) {
+    const mi = readFileSafe('/proc/meminfo')
+    if (mi) {
+      const kv = {}
+      for (const line of mi.split('\n')) {
+        const m = line.match(/^(\w+):\s+(\d+)\s*kB/)
+        if (m) kv[m[1]] = Number(m[2]) * 1024   // kB → bytes
+      }
+      const total = kv.MemTotal || os.totalmem()
+      const avail = kv.MemAvailable != null ? kv.MemAvailable : (kv.MemFree || 0)
+      const used  = Math.max(0, total - avail)
+      const swTotal = kv.SwapTotal || 0
+      const swFree  = kv.SwapFree  || 0
+      const swUsed  = Math.max(0, swTotal - swFree)
+      return {
+        ram: total ? Math.round((used / total) * 100) : 0,
+        ram_used: formatBytes(used),
+        ram_total: formatBytes(total),
+        swap: swTotal ? Math.round((swUsed / swTotal) * 100) : 0,
+        swap_used: formatBytes(swUsed),
+        swap_total: formatBytes(swTotal),
+      }
+    }
+  }
+  // Windows / fallback
   const total = os.totalmem()
   const free = os.freemem()
   const used = total - free
@@ -37,6 +139,7 @@ function getRamInfo() {
     ram: Math.round((used / total) * 100),
     ram_used: formatBytes(used),
     ram_total: formatBytes(total),
+    swap: 0, swap_used: '—', swap_total: '—',
   }
 }
 
@@ -78,7 +181,6 @@ function getLoad() { return os.loadavg().map(l => l.toFixed(2)).join(', ') }
 // ─── Network traffic (per-interface) ───────────────────────────────────────
 // Baca counter RX/TX dari /proc/net/dev lalu hitung laju (bytes/detik) dari
 // selisih antar-sampel. State disimpan di memori antar request.
-const fs = require('fs')
 let prevNet = { time: 0, ifaces: {} }
 
 function readProcNetDev() {
@@ -157,15 +259,22 @@ router.get('/stream', (req, res) => {
     'Connection':    'keep-alive',
     'X-Accel-Buffering': 'no',   // nginx jangan buffer
   })
+  res.flushHeaders?.()           // kirim header segera, jangan tunggu buffer
+  if (typeof res.socket?.setNoDelay === 'function') res.socket.setNoDelay(true)
   res.write(':ok\n\n')           // komentar awal supaya browser connect langsung
 
   let alive = true
   req.on('close', () => { alive = false })
 
+  // CPU delta butuh 2 sampel; panggil sekali agar baseline terisi.
+  getCpuPercent()
   send()  // kirim segera
 
-  const iv = setInterval(() => { if (alive) send() }, 2000)
-  req.on('close', () => clearInterval(iv))
+  // 1 detik agar grafik CPU/RAM terasa cepat dan responsif.
+  const iv = setInterval(() => { if (alive) send() }, 1000)
+  // keepalive comment tiap 15s supaya proxy tidak menutup koneksi idle
+  const ka = setInterval(() => { if (alive) { try { res.write(':ka\n\n') } catch {} } }, 15000)
+  req.on('close', () => { clearInterval(iv); clearInterval(ka) })
 
   function send() {
     try {

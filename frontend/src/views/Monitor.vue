@@ -50,6 +50,9 @@
           </div>
         </div>
         <div class="rf-stat-sub">{{ stats.ram_used || '—' }} / {{ stats.ram_total || '—' }}</div>
+        <div class="rf-stat-sub" v-if="stats.swap_total && stats.swap_total !== '—'">
+          Swap: {{ stats.swap_used || '—' }} / {{ stats.swap_total || '—' }} ({{ stats.swap ?? 0 }}%)
+        </div>
         <div class="rf-progress" style="height:6px">
           <div class="rf-progress-fill" :style="`width:${stats.ram||0}%;background:var(--info)`"></div>
         </div>
@@ -103,7 +106,7 @@
             </span>
             <div>
               <h3>CPU Realtime</h3>
-              <p>Smooth graph, last 90 seconds</p>
+              <p>Smooth graph, last 60 seconds</p>
             </div>
           </div>
           <code class="code-chip">{{ stats.cpu ?? 0 }}% now</code>
@@ -123,7 +126,7 @@
             <span>0%</span><span>50%</span><span>100%</span>
           </div>
         </div>
-        <div class="rf-chart-axis"><span>90s lalu</span><span>sekarang</span></div>
+        <div class="rf-chart-axis"><span>60s lalu</span><span>sekarang</span></div>
       </article>
 
       <article class="rf-card rf-chart-card">
@@ -495,9 +498,9 @@ const svcPage = ref(1); const svcPageSize = ref(10)
 const topPage = ref(1); const topPageSize = ref(10)
 const memPage = ref(1); const memPageSize = ref(10)
 const instPage = ref(1); const instPageSize = ref(5)
-const cpuHistory = ref(Array(30).fill(0))
-const netRxHistory = ref(Array(30).fill(0))
-const netTxHistory = ref(Array(30).fill(0))
+const cpuHistory = ref(Array(60).fill(0))
+const netRxHistory = ref(Array(60).fill(0))
+const netTxHistory = ref(Array(60).fill(0))
 const autoRefresh = ref(true)
 const acsBusy = ref(false)
 const acsMsg = ref('')
@@ -631,13 +634,13 @@ function applyStatsPayload(data) {
   stats.value = data
 
   cpuHistory.value.push(data.cpu || 0)
-  if (cpuHistory.value.length > 30) cpuHistory.value.shift()
+  if (cpuHistory.value.length > 60) cpuHistory.value.shift()
 
   const net = (data.net || [])[0] || { rx_sec: 0, tx_sec: 0 }
   netRxHistory.value.push(net.rx_sec || 0)
   netTxHistory.value.push(net.tx_sec || 0)
-  if (netRxHistory.value.length > 30) netRxHistory.value.shift()
-  if (netTxHistory.value.length > 30) netTxHistory.value.shift()
+  if (netRxHistory.value.length > 60) netRxHistory.value.shift()
+  if (netTxHistory.value.length > 60) netTxHistory.value.shift()
 }
 
 // Fallback polling (kalau SSE gagal connect)

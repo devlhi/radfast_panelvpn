@@ -42,6 +42,23 @@ function setSessionCookie(res, token) {
   res.cookie(config.cookieName, token, COOKIE_OPTS())
 }
 
+function getSessionJti(req) {
+  const token = req.cookies?.[config.cookieName]
+  if (!token || String(token).length > 4096) return ''
+
+  try {
+    const payload = jwt.verify(token, config.jwt.secret, {
+      algorithms: ['HS256'],
+      issuer: config.jwt.issuer,
+      audience: config.jwt.audience,
+      clockTolerance: 5,
+    })
+    return payload?.jti || ''
+  } catch (_err) {
+    return ''
+  }
+}
+
 // ═════════════════════════════════════════════════════════════════════════
 // POST /api/auth/login
 // On success: either issues full session or partial token requesting 2FA.
@@ -107,7 +124,7 @@ router.post(
     // ── Full session (no 2FA enrolled) ──────────────────────────────────
     const token = signToken({ sub: username, role: 'superadmin', jti, amr: ['pwd'] })
     setSessionCookie(res, token)
-    csrf.issue(res)
+    csrf.issue(res, jti)
 
     audit.record('login.success', { username, jti, twofa: false }, req)
     return res.json({
@@ -162,7 +179,7 @@ router.post(
       sub: payload.sub, role: 'superadmin', jti: newJti, amr: ['pwd', 'mfa'],
     })
     setSessionCookie(res, session)
-    csrf.issue(res)
+    csrf.issue(res, newJti)
 
     audit.record('login.success', {
       username: payload.sub, jti: newJti, twofa: true,
@@ -257,9 +274,57 @@ router.post(
   },
 )
 
+// ═════════════════════════════════════════════════════════════════════════
+// Provisioning API Key management (JWT-protected)
+// ═════════════════════════════════════════════════════════════════════════
+const keyStore = require('../lib/provisioningKeyStore')
+
+router.get('/provisioning-key', auth, (req, res) => {
+  const meta = keyStore.getMeta()
+  res.json(meta)
+})
+
+router.post('/provisioning-key/generate', auth, (req, res) => {
+  try {
+    const apiKeyPlain = keyStore.generateKey()
+    keyStore.setKey(apiKeyPlain)
+    audit.record('provision.key_generated', { username: req.admin.sub }, req)
+
+    res.json({
+      apiKey: apiKeyPlain,
+      mask: keyStore.mask(apiKeyPlain),
+      warning: 'Simpan key ini sekarang — tidak akan ditampilkan lagi.',
+    })
+  } catch (e) {
+    return res.status(500).json({ message: e.message || 'Gagal generate API key.' })
+  }
+})
+
+router.put('/provisioning-key', auth,
+  body('apiKey').isString().isLength({ min: 32, max: 256 }),
+  (req, res) => {
+    const errors = validationResult(req)
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ message: 'API key minimal 32 karakter.' })
+    }
+    try {
+      const result = keyStore.setKey(req.body.apiKey.trim())
+      audit.record('provision.key_set', { username: req.admin.sub, source: 'manual' }, req)
+      res.json({
+        ok: true,
+        mask: result.apiKey ? keyStore.mask(result.apiKey) : '',
+        updatedAt: result.updatedAt,
+      })
+    } catch (e) {
+      return res.status(400).json({ message: e.message || 'Gagal menyimpan API key.' })
+    }
+  },
+)
+
 // CSRF bootstrap — frontend calls this once at app boot.
 router.get('/csrf', (req, res) => {
-  csrf.issue(res)
+  const jti = getSessionJti(req)
+  csrf.issue(res, jti)
   res.json({ ok: true })
 })
 

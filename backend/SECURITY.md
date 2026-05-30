@@ -23,11 +23,11 @@ arsitektur keamanan, prosedur operasional, dan checklist sebelum naik ke produks
 | Brute force login                       | `express-rate-limit` (5 fail / 15 min) + lockout 30 min @ 8 fail         |
 | Timing attack pada username             | `crypto.timingSafeEqual` + dummy bcrypt compare untuk user invalid       |
 | Plaintext password disk                 | `bcryptjs` cost-12 hash di `.env`                                        |
-| Session hijack via XSS (localStorage)   | **Auth via httpOnly cookie** `rf_session` + `sameSite=strict` + `secure` (prod) |
+| Session hijack via XSS (localStorage)   | **Auth via httpOnly cookie** `rf_session` + `sameSite=strict` + `secure` saat `HTTPS=true` |
 | JWT lemah / weak secret                 | Min 48 char enforced di `config.js`; HS256 + iss/aud/jti + amr claims    |
-| Token replay / lost device              | **JWT revocation list** (`lib/tokenStore.js`); logout & 2FA-verify burn jti |
+| Token replay / lost device              | **JWT revocation list** (`lib/tokenStore.js`, file-backed di `data/token-blacklist.json` — tahan restart); logout & 2FA-verify burn jti |
 | Credential phishing / pwd-only auth     | **TOTP 2FA** (`lib/twofa.js`) + 10 recovery codes (bcrypt cost 8)        |
-| Cross-site request forgery              | **HMAC double-submit** (`lib/csrf.js`) — cookie `XSRF-TOKEN` + header `X-CSRF-Token` |
+| Cross-site request forgery              | **HMAC double-submit terikat session jti** (`lib/csrf.js`) — cookie `XSRF-TOKEN` + header `X-CSRF-Token`, compare timing-safe |
 | XSS / clickjacking                      | `helmet` strict CSP + `X-Frame-Options: DENY` + `frame-ancestors 'none'` |
 | CORS bypass                             | Allow-list origin via `ALLOWED_ORIGINS` (callback-based, `credentials:true`) |
 | HTTP parameter pollution                | `hpp()` middleware                                                       |
@@ -94,8 +94,9 @@ Sebelum deploy ke server publik:
 - [ ] Ganti admin password via `scripts/set-admin-password.js`
 - [ ] **Aktifkan 2FA** di `/settings` setelah login pertama (HIGHLY RECOMMENDED)
 - [ ] Set `ALLOWED_ORIGINS` ke domain produksi saja (https only)
-- [ ] Set `TRUST_PROXY=1` jika di belakang Nginx/Cloudflare
-- [ ] Pasang Nginx/Caddy reverse proxy + Let's Encrypt TLS
+- [ ] Wajib jalankan panel di belakang TLS (Nginx/Caddy + Let's Encrypt)
+- [ ] Set `HTTPS=true` hanya setelah TLS aktif (agar cookie secure + HSTS aktif)
+- [ ] Set `TRUST_PROXY` sesuai jumlah hop proxy (umumnya `1`)
 - [ ] Tambah firewall rule: hanya 80/443 publik, port 9000 hanya localhost
 - [ ] Mount `backend/data/` di volume persistent (untuk audit log + 2FA secret)
 - [ ] Setup log rotation eksternal (`logrotate`) untuk `data/logs/`

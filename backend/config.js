@@ -73,6 +73,8 @@ module.exports = {
     totpSecret: process.env.ADMIN_TOTP_SECRET || '',
   },
 
+  provisioningApiKey: process.env.PROVISIONING_API_KEY || '',
+
   rateLimit: {
     loginMax:    parseInt(process.env.RATE_LIMIT_LOGIN_MAX, 10) || 5,
     loginWinMs:  (parseInt(process.env.RATE_LIMIT_LOGIN_WINDOW_MIN, 10) || 15) * 60_000,

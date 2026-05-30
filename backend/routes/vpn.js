@@ -66,6 +66,113 @@ function handleValidation(req, res) {
 
 const safeNote = (s) => String(s || '').slice(0, 200).replace(/[\x00-\x1f\x7f]/g, '')
 
+// ─── IP pool helpers ─────────────────────────────────────────────────────
+/** Validasi satu alamat IPv4 (mis. 192.168.42.10). */
+function isValidIPv4(ip) {
+  const m = String(ip).match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+  if (!m) return false
+  return m.slice(1).every((o) => { const n = Number(o); return n >= 0 && n <= 255 })
+}
+
+/** Validasi subnet /24 (mis. 192.168.42.0/24). Hanya /24 yang didukung. */
+function isValidCidr24(s) {
+  const m = String(s).match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.0\/24$/)
+  if (!m) return false
+  return m.slice(1, 4).every((o) => { const n = Number(o); return n >= 0 && n <= 255 })
+}
+
+/** Ambil prefix "a.b.c." dari subnet "a.b.c.0/24", atau null jika invalid. */
+function cidr24Prefix(subnet) {
+  const m = String(subnet).match(/^(\d{1,3}\.\d{1,3}\.\d{1,3})\.0\/24$/)
+  return m ? m[1] + '.' : null
+}
+
+/** Default IP pool L2TP. */
+function l2tpPoolDefaults() {
+  return {
+    subnet:      '192.168.42.0/24',
+    local_ip:    '192.168.42.1',
+    range_start: '192.168.42.10',
+    range_end:   '192.168.42.100',
+  }
+}
+
+/** Tulis /etc/xl2tpd/xl2tpd.conf dari konfigurasi pool & restart xl2tpd. */
+function writeXl2tpdConf(cfg) {
+  if (!isLinux) return
+  const d = l2tpPoolDefaults()
+  const localIp    = cfg.local_ip    || d.local_ip
+  const rangeStart = cfg.range_start || d.range_start
+  const rangeEnd   = cfg.range_end   || d.range_end
+  try {
+    fs.mkdirSync('/etc/xl2tpd', { recursive: true })
+    fs.writeFileSync('/etc/xl2tpd/xl2tpd.conf', [
+      '[global]', 'port = 1701', '',
+      '[lns default]',
+      `ip range = ${rangeStart}-${rangeEnd}`,
+      `local ip = ${localIp}`,
+      'require chap = yes', 'refuse pap = yes', 'require authentication = yes',
+      'name = RadFastVPN', 'pppoptfile = /etc/ppp/options.xl2tpd',
+      'length bit = yes',
+    ].join('\n') + '\n', { mode: 0o644 })
+    try { runCmdSync('systemctl', ['restart', 'xl2tpd']) } catch {}
+  } catch (e) { console.error('xl2tpd.conf:', e.message) }
+}
+
+/**
+ * Validasi 1 set pool L2TP. Mengembalikan { ok, message?, pool? }.
+ * Semua IP (local, range start/end) wajib berada dalam subnet /24 yang sama.
+ */
+function validateL2tpPool({ subnet, local_ip, range_start, range_end }) {
+  if (!isValidCidr24(subnet)) return { ok: false, message: 'Subnet harus format x.x.x.0/24.' }
+  const prefix = cidr24Prefix(subnet)
+  for (const [label, ip] of [['Local IP', local_ip], ['IP awal', range_start], ['IP akhir', range_end]]) {
+    if (!isValidIPv4(ip)) return { ok: false, message: `${label} bukan IPv4 valid.` }
+    if (!ip.startsWith(prefix)) return { ok: false, message: `${label} harus berada dalam subnet ${subnet}.` }
+  }
+  const startOctet = Number(range_start.split('.')[3])
+  const endOctet   = Number(range_end.split('.')[3])
+  const localOctet = Number(local_ip.split('.')[3])
+  if (startOctet > endOctet) return { ok: false, message: 'IP awal harus lebih kecil atau sama dengan IP akhir.' }
+  if (localOctet >= startOctet && localOctet <= endOctet) {
+    return { ok: false, message: 'Local IP (gateway) tidak boleh berada di dalam range pool client.' }
+  }
+  return { ok: true, pool: { subnet, local_ip, range_start, range_end } }
+}
+
+/** Default IP pool WireGuard. */
+function wireguardPoolDefaults() {
+  return {
+    subnet: '10.8.1.0/24',
+    server_vpn_ip: '10.8.1.1',
+    next_ip: 2,
+  }
+}
+
+/** Validasi pool WireGuard. */
+function validateWireGuardPool({ subnet, server_vpn_ip, next_ip }) {
+  if (!isValidCidr24(subnet)) return { ok: false, message: 'Subnet harus format x.x.x.0/24.' }
+  const prefix = cidr24Prefix(subnet)
+  if (!isValidIPv4(server_vpn_ip)) return { ok: false, message: 'Server VPN IP bukan IPv4 valid.' }
+  if (!server_vpn_ip.startsWith(prefix)) return { ok: false, message: `Server VPN IP harus berada dalam subnet ${subnet}.` }
+  const serverOctet = Number(server_vpn_ip.split('.')[3])
+  if (serverOctet < 1 || serverOctet > 254) return { ok: false, message: 'Server VPN IP tidak boleh memakai .0 atau .255.' }
+  const next = Number(next_ip)
+  if (!Number.isInteger(next) || next < 2 || next > 254) return { ok: false, message: 'Next IP harus angka 2-254.' }
+  if (next === serverOctet) return { ok: false, message: 'Next IP tidak boleh sama dengan Server VPN IP.' }
+  return { ok: true, pool: { subnet, server_vpn_ip, next_ip: next } }
+}
+
+function updateWireGuardAddress(serverVpnIp) {
+  if (!isLinux || !fs.existsSync('/etc/wireguard/wg0.conf')) return
+  try {
+    const conf = fs.readFileSync('/etc/wireguard/wg0.conf', 'utf8')
+    const nextConf = conf.replace(/^Address\s*=.*$/m, `Address = ${serverVpnIp}/24`)
+    fs.writeFileSync('/etc/wireguard/wg0.conf', nextConf, { mode: 0o600 })
+    try { runCmdSync('systemctl', ['restart', 'wg-quick@wg0']) } catch {}
+  } catch (e) { console.error('wg0.conf address:', e.message) }
+}
+
 // ═════════════════════════════════════════════════════════════════════════
 // STATUS
 // ═════════════════════════════════════════════════════════════════════════
@@ -133,17 +240,9 @@ router.post(
 
       fs.writeFileSync('/etc/ipsec.secrets', `: PSK "${psk}"\n`, { mode: 0o600 })
 
-      // ── Write xl2tpd.conf ─────────────────────────────────────────────────
-      fs.mkdirSync('/etc/xl2tpd', { recursive: true })
-      fs.writeFileSync('/etc/xl2tpd/xl2tpd.conf', [
-        '[global]', 'port = 1701', '',
-        '[lns default]',
-        'ip range = 192.168.42.10-192.168.42.100',
-        'local ip = 192.168.42.1',
-        'require chap = yes', 'refuse pap = yes', 'require authentication = yes',
-        'name = RadFastVPN', 'pppoptfile = /etc/ppp/options.xl2tpd',
-        'length bit = yes',
-      ].join('\n') + '\n', { mode: 0o644 })
+      // ── Write xl2tpd.conf (pakai pool default) ────────────────────────────
+      const l2tpPool = l2tpPoolDefaults()
+      writeXl2tpdConf(l2tpPool)
 
       fs.mkdirSync('/etc/ppp', { recursive: true })
       fs.writeFileSync('/etc/ppp/options.xl2tpd', [
@@ -189,7 +288,7 @@ router.post(
       writePppIpUpScript()
 
       // ── Save config & default user ────────────────────────────────────────
-      writeJSON(L2TP_CFG_FILE, { psk, server_ip: getServerIP(), subnet: '192.168.42.0/24' })
+      writeJSON(L2TP_CFG_FILE, { psk, server_ip: getServerIP(), ...l2tpPool })
 
       const users = readJSON(L2TP_USERS_FILE)
       if (!users.find(u => u.username === vpnUser)) {
@@ -213,32 +312,89 @@ router.post(
 )
 
 router.get('/l2tp/config', (req, res) => {
-  if (!fs.existsSync(L2TP_CFG_FILE)) {
-    return res.json({ psk: null, server_ip: getServerIP(), subnet: '192.168.42.0/24' })
-  }
-  const cfg = readJSON(L2TP_CFG_FILE) || {}
-  res.json({ ...cfg, server_ip: getServerIP() })
+  const cfg = fs.existsSync(L2TP_CFG_FILE) ? (readJSON(L2TP_CFG_FILE) || {}) : {}
+  const d = l2tpPoolDefaults()
+  res.json({
+    psk: cfg.psk || null,
+    subnet: cfg.subnet || d.subnet,
+    local_ip: cfg.local_ip || d.local_ip,
+    range_start: cfg.range_start || d.range_start,
+    range_end: cfg.range_end || d.range_end,
+    server_ip: getServerIP(),
+  })
 })
 
 router.put(
   '/l2tp/config',
-  body('psk').isString().isLength({ min: 12, max: 64 }).matches(/^[a-zA-Z0-9!@#$%^&*()_+=-]+$/),
+  body('psk').optional().isString().isLength({ min: 12, max: 64 }).matches(/^[a-zA-Z0-9!@#$%^&*()_+=-]+$/),
+  body('subnet').optional().isString(),
+  body('local_ip').optional().isString(),
+  body('range_start').optional().isString(),
+  body('range_end').optional().isString(),
   (req, res) => {
     if (!handleValidation(req, res)) return
-    const psk = req.body.psk
-    const cfg = fs.existsSync(L2TP_CFG_FILE) ? readJSON(L2TP_CFG_FILE) || {} : {}
-    cfg.psk = psk
-    writeJSON(L2TP_CFG_FILE, cfg)
 
-    if (isLinux) {
+    const existing = fs.existsSync(L2TP_CFG_FILE) ? (readJSON(L2TP_CFG_FILE) || {}) : {}
+    const next = { ...l2tpPoolDefaults(), ...existing }
+
+    let pskChanged = false
+    let poolChanged = false
+
+    if (typeof req.body.psk === 'string') {
+      next.psk = req.body.psk
+      pskChanged = true
+    }
+
+    const poolKeys = ['subnet', 'local_ip', 'range_start', 'range_end']
+    const requestedPoolChange = poolKeys.some((k) => typeof req.body[k] === 'string' && req.body[k].trim() !== '')
+    if (requestedPoolChange) {
+      const candidate = {
+        subnet: req.body.subnet || next.subnet,
+        local_ip: req.body.local_ip || next.local_ip,
+        range_start: req.body.range_start || next.range_start,
+        range_end: req.body.range_end || next.range_end,
+      }
+      const v = validateL2tpPool(candidate)
+      if (!v.ok) return res.status(400).json({ message: v.message })
+      next.subnet = v.pool.subnet
+      next.local_ip = v.pool.local_ip
+      next.range_start = v.pool.range_start
+      next.range_end = v.pool.range_end
+      poolChanged = true
+    }
+
+    writeJSON(L2TP_CFG_FILE, next)
+
+    if (isLinux && pskChanged) {
       try {
-        fs.writeFileSync('/etc/ipsec.secrets', `: PSK "${psk}"\n`, { mode: 0o600 })
+        fs.writeFileSync('/etc/ipsec.secrets', `: PSK "${next.psk}"\n`, { mode: 0o600 })
         try { runCmdSync('ipsec', ['rereadsecrets']) } catch {}
         try { runCmdSync('ipsec', ['reload']) } catch {}
       } catch {}
     }
-    audit.record('vpn.l2tp.psk_rotate', {}, req)
-    res.json({ message: 'PSK updated.' })
+
+    if (isLinux && poolChanged) {
+      writeXl2tpdConf(next)
+    }
+
+    audit.record('vpn.l2tp.config_update', {
+      pskChanged,
+      poolChanged,
+      subnet: next.subnet,
+      range: `${next.range_start}-${next.range_end}`,
+    }, req)
+
+    res.json({
+      message: 'Konfigurasi L2TP berhasil diperbarui.',
+      config: {
+        psk: next.psk || null,
+        subnet: next.subnet,
+        local_ip: next.local_ip,
+        range_start: next.range_start,
+        range_end: next.range_end,
+        server_ip: getServerIP(),
+      },
+    })
   },
 )
 
@@ -274,7 +430,9 @@ router.get(
 router.post(
   '/l2tp/users',
   body('username').isString().matches(/^[a-zA-Z0-9_.-]{1,64}$/),
-  body('password').isString().isLength({ min: 8, max: 128 }).matches(/^[\x21-\x7e]+$/),
+  // Printable ASCII EXCEPT space (0x20), double-quote (0x22) dan backslash (0x5c):
+  // keduanya bisa merusak parsing field di /etc/ppp/chap-secrets.
+  body('password').isString().isLength({ min: 8, max: 128 }).matches(/^[\x21\x23-\x5b\x5d-\x7e]+$/),
   body('instance').optional().isString().isLength({ max: 64 }).matches(/^[a-zA-Z0-9_-]*$/),
   body('note').optional().isString().isLength({ max: 200 }),
   (req, res) => {
@@ -423,7 +581,7 @@ router.get(
     const user = readJSON(L2TP_USERS_FILE).find(u => u.username === req.params.username)
     if (!user) return res.status(404).json({ message: 'User tidak ditemukan.' })
 
-    const cfg = fs.existsSync(L2TP_CFG_FILE) ? readJSON(L2TP_CFG_FILE) || {} : {}
+    const cfg = { ...l2tpPoolDefaults(), ...(fs.existsSync(L2TP_CFG_FILE) ? (readJSON(L2TP_CFG_FILE) || {}) : {}) }
     const serverIP = getServerIP()
     const psk = cfg.psk || 'YOUR_PSK'
 
@@ -435,7 +593,7 @@ add name="vpn-radfast" connect-to=${serverIP} user="${user.username}" password="
     disabled=no add-default-route=no profile=default-encryption
 
 /ip route
-add dst-address=192.168.42.0/24 gateway="vpn-radfast" comment="RadFast ACS VPN"
+add dst-address=${cfg.subnet} gateway="vpn-radfast" comment="RadFast ACS VPN"
 
 # Verifikasi:
 /interface l2tp-client print
@@ -456,6 +614,7 @@ router.post(
     if (isWin) return res.status(400).json({ message: 'Hanya bisa di Linux.' })
 
     const port = validatePort(req.body.port || 51820)
+    const wgPool = wireguardPoolDefaults()
 
     try {
       await runCmd('apt-get', ['install', '-y', 'wireguard'], { timeout: 120_000 })
@@ -477,7 +636,7 @@ router.post(
 
       fs.writeFileSync('/etc/wireguard/wg0.conf', [
         '[Interface]',
-        'Address = 10.8.1.1/24',
+        `Address = ${wgPool.server_vpn_ip}/24`,
         `ListenPort = ${port}`,
         `PrivateKey = ${priv}`,
         'PostUp   = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE',
@@ -489,7 +648,7 @@ router.post(
 
       writeJSON(WG_CFG_FILE, {
         port, server_ip: getServerIP(),
-        server_pubkey: pub, subnet: '10.8.1.0/24', next_ip: 2,
+        server_pubkey: pub, ...wgPool,
       })
 
       audit.record('vpn.wg.install', { port }, req)
@@ -501,12 +660,75 @@ router.post(
 )
 
 router.get('/wireguard/config', (req, res) => {
-  if (!fs.existsSync(WG_CFG_FILE)) {
-    return res.json({ server_pubkey: null, server_ip: getServerIP(), port: 51820, subnet: '10.8.1.0/24' })
-  }
-  const cfg = readJSON(WG_CFG_FILE) || {}
-  res.json({ ...cfg, server_ip: getServerIP() })
+  const cfg = fs.existsSync(WG_CFG_FILE) ? (readJSON(WG_CFG_FILE) || {}) : {}
+  const d = wireguardPoolDefaults()
+  res.json({
+    port: cfg.port || 51820,
+    server_pubkey: cfg.server_pubkey || null,
+    subnet: cfg.subnet || d.subnet,
+    server_vpn_ip: cfg.server_vpn_ip || d.server_vpn_ip,
+    next_ip: cfg.next_ip != null ? cfg.next_ip : d.next_ip,
+    server_ip: getServerIP(),
+  })
 })
+
+router.put(
+  '/wireguard/config',
+  body('subnet').optional().isString(),
+  body('server_vpn_ip').optional().isString(),
+  body('next_ip').optional().isInt({ min: 2, max: 254 }),
+  (req, res) => {
+    if (!handleValidation(req, res)) return
+
+    const existing = fs.existsSync(WG_CFG_FILE) ? (readJSON(WG_CFG_FILE) || {}) : {}
+    const next = { ...wireguardPoolDefaults(), ...existing }
+
+    let poolChanged = false
+    const requestedPoolChange =
+      typeof req.body.subnet === 'string' ||
+      typeof req.body.server_vpn_ip === 'string' ||
+      req.body.next_ip != null
+
+    if (requestedPoolChange) {
+      const candidate = {
+        subnet: req.body.subnet || next.subnet,
+        server_vpn_ip: req.body.server_vpn_ip || next.server_vpn_ip,
+        next_ip: req.body.next_ip != null ? req.body.next_ip : next.next_ip,
+      }
+      const v = validateWireGuardPool(candidate)
+      if (!v.ok) return res.status(400).json({ message: v.message })
+      next.subnet = v.pool.subnet
+      next.server_vpn_ip = v.pool.server_vpn_ip
+      next.next_ip = v.pool.next_ip
+      poolChanged = true
+    }
+
+    writeJSON(WG_CFG_FILE, next)
+
+    if (poolChanged) {
+      updateWireGuardAddress(next.server_vpn_ip)
+    }
+
+    audit.record('vpn.wg.config_update', {
+      poolChanged,
+      subnet: next.subnet,
+      server_vpn_ip: next.server_vpn_ip,
+      next_ip: next.next_ip,
+    }, req)
+
+    res.json({
+      message: 'Konfigurasi WireGuard berhasil diperbarui.',
+      config: {
+        port: next.port || 51820,
+        server_pubkey: next.server_pubkey || null,
+        subnet: next.subnet,
+        server_vpn_ip: next.server_vpn_ip,
+        next_ip: next.next_ip,
+        server_ip: getServerIP(),
+      },
+    })
+  },
+)
 
 router.get('/wireguard/peers', (req, res) => {
   const peers = readJSON(WG_PEERS_FILE)
@@ -536,7 +758,7 @@ router.post(
 
     const cfg = fs.existsSync(WG_CFG_FILE)
       ? (readJSON(WG_CFG_FILE) || {})
-      : { port: 51820, subnet: '10.8.1.0/24', next_ip: 2 }
+      : { port: 51820, ...wireguardPoolDefaults() }
 
     const peers = readJSON(WG_PEERS_FILE)
     if (peers.find(p => p.name === name)) {
@@ -564,8 +786,24 @@ router.post(
       pubKey  = crypto.randomBytes(32).toString('base64')
     }
 
-    const peerIP = `10.8.1.${cfg.next_ip || 2}`
-    cfg.next_ip = (cfg.next_ip || 2) + 1
+    const wgPrefix = cidr24Prefix(cfg.subnet) || '10.8.1.'
+    const usedOctets = new Set(
+      peers
+        .map(p => Number(String(p.peer_ip || '').split('.')[3]))
+        .filter(n => Number.isInteger(n)),
+    )
+    const serverOctet = Number(String(cfg.server_vpn_ip || '').split('.')[3])
+    if (Number.isInteger(serverOctet)) usedOctets.add(serverOctet)
+
+    let octet = Number(cfg.next_ip) || 2
+    if (octet < 2) octet = 2
+    while (octet <= 254 && usedOctets.has(octet)) octet++
+    if (octet > 254) {
+      return res.status(409).json({ message: 'Pool IP WireGuard penuh (max .254).' })
+    }
+
+    const peerIP = `${wgPrefix}${octet}`
+    cfg.next_ip = octet + 1
     writeJSON(WG_CFG_FILE, cfg)
 
     const peer = {
@@ -731,7 +969,7 @@ router.get(
     const peer = readJSON(WG_PEERS_FILE).find(p => p.name === req.params.name)
     if (!peer) return res.status(404).json({ message: 'Peer tidak ditemukan.' })
 
-    const cfg = fs.existsSync(WG_CFG_FILE) ? (readJSON(WG_CFG_FILE) || {}) : {}
+    const cfg = { ...wireguardPoolDefaults(), ...(fs.existsSync(WG_CFG_FILE) ? (readJSON(WG_CFG_FILE) || {}) : {}) }
     const serverIP = getServerIP()
     const serverPubkey = cfg.server_pubkey || 'SERVER_PUBKEY'
     const port = validatePort(cfg.port || 51820)
@@ -749,14 +987,14 @@ add interface="wg-radfast" \\
     public-key="${serverPubkey}" \\
     endpoint-address=${serverIP} \\
     endpoint-port=${port} \\
-    allowed-address=10.8.1.0/24 \\
+    allowed-address=${cfg.subnet} \\
     persistent-keepalive=25s
 
 /ip address
 add interface="wg-radfast" address="${peer.peer_ip}/24"
 
 /ip route
-add dst-address=10.8.1.0/24 gateway="wg-radfast" comment="RadFast ACS"
+add dst-address=${cfg.subnet} gateway="wg-radfast" comment="RadFast ACS"
 
 # Verifikasi:
 /interface wireguard peers print`

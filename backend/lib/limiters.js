@@ -23,7 +23,15 @@ function buildLimiter(opts) {
   })
 }
 
+const provisionWindowMs = (parseInt(process.env.RATE_LIMIT_PROVISION_WINDOW_MIN, 10) || 15) * 60_000
+const provisionMax      = parseInt(process.env.RATE_LIMIT_PROVISION_MAX, 10) || 60
+
 module.exports = {
+  provisionLimiter: buildLimiter({
+    windowMs: provisionWindowMs,
+    max:      provisionMax,
+    label:    'provision',
+  }),
   loginLimiter: buildLimiter({
     windowMs: config.rateLimit.loginWinMs,
     max:      config.rateLimit.loginMax,

@@ -14,11 +14,17 @@
  *
  * Flags:
  *   --username <name>   Rename admin (optional).
- *   --password <pass>   Set password directly (no prompt). Use single quotes on Linux.
+ *   --password <pass>   Set password directly (no prompt). NOT RECOMMENDED:
+ *                       visible in process list (tasklist/ps) and shell history.
+ *                       Prefer interactive mode, --gen, or the ADMIN_PASSWORD env var.
  *   --gen               Auto-generate a 20-char random password and print it.
  *   --reset-2fa         Wipe data/admin-2fa.json so login skips TOTP step.
  *   --no-strict         Skip complexity rules (dev only — still enforces min length 8).
  *   -h, --help          Show this help.
+ *
+ * Environment:
+ *   ADMIN_PASSWORD      If set, used as the password (safer than --password,
+ *                       not shown in process list). Overridden by --password/--gen.
  *
  * Exit codes:
  *   0 success    1 invalid args    2 .env missing    3 password too weak
@@ -112,6 +118,16 @@ function ask(question, { silent = false } = {}) {
   return silent ? askSilent(question) : askPlain(question)
 }
 
+// Uniform Fisher–Yates shuffle backed by CSPRNG (crypto.randomInt).
+function shuffle(str) {
+  const a = str.split('')
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = crypto.randomInt(i + 1)
+    ;[a[i], a[j]] = [a[j], a[i]]
+  }
+  return a.join('')
+}
+
 function genPassword(len = 20) {
   // Mix from each pool to satisfy strict rules.
   const upper = 'ABCDEFGHJKMNPQRSTUVWXYZ'
@@ -122,8 +138,15 @@ function genPassword(len = 20) {
   const pick  = (set) => set[crypto.randomInt(set.length)]
   let pwd = pick(upper) + pick(lower) + pick(digit) + pick(symb)
   while (pwd.length < len) pwd += pick(all)
-  // Shuffle.
-  return pwd.split('').sort(() => crypto.randomInt(3) - 1).join('')
+  return shuffle(pwd)
+}
+
+// Username goes verbatim into .env; restrict charset to prevent line injection.
+function validateUsername(name) {
+  if (!/^[a-zA-Z0-9_.-]{2,32}$/.test(name)) {
+    return '❌ Username invalid. Hanya a-z A-Z 0-9 . _ - (2-32 karakter).'
+  }
+  return null
 }
 
 function validatePassword(pwd, strict) {
@@ -140,8 +163,21 @@ function validatePassword(pwd, strict) {
 }
 
 function upsertEnv(envText, key, value) {
-  const re = new RegExp(`^${key}=.*$`, 'm')
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const re = new RegExp(`^${escapedKey}=.*$`, 'm')
   return re.test(envText) ? envText.replace(re, `${key}=${value}`) : envText.trimEnd() + `\n${key}=${value}\n`
+}
+
+// Write .env atomically: write to a temp file then rename, so a crash mid-write
+// can never leave a truncated/corrupt .env. Keep a one-time .env.bak backup.
+function writeEnvAtomic(envPath, contents) {
+  const dir = path.dirname(envPath)
+  const tmp = path.join(dir, `.env.tmp-${process.pid}-${Date.now()}`)
+  try {
+    fs.copyFileSync(envPath, `${envPath}.bak`)
+  } catch { /* original may not exist or already backed up — non-fatal */ }
+  fs.writeFileSync(tmp, contents, { mode: 0o600 })
+  fs.renameSync(tmp, envPath)
 }
 
 // ─── main ──────────────────────────────────────────────────────────────────
@@ -159,16 +195,25 @@ async function main() {
   if (!username && opts.password === null && !opts.gen) {
     username = (await ask('Username admin (Enter untuk skip rename): ')).trim() || null
   }
+  if (username) {
+    const uErr = validateUsername(username)
+    if (uErr) { console.error(uErr); process.exit(1) }
+  }
 
   // Resolve password
   let pwd = opts.password
   if (opts.gen) {
     pwd = genPassword(20)
     console.log(`🎲 Password generated: ${pwd}\n   ⚠ Simpan sekarang — tidak akan ditampilkan lagi.\n`)
+  } else if (pwd === null && process.env.ADMIN_PASSWORD) {
+    pwd = process.env.ADMIN_PASSWORD
+    console.log('🔑 Menggunakan password dari env var ADMIN_PASSWORD.\n')
   } else if (pwd === null) {
     pwd = await ask('Password baru: ', { silent: true })
     const pwd2 = await ask('Konfirmasi password: ', { silent: true })
     if (pwd !== pwd2) { console.error('❌ Password tidak cocok.'); process.exit(3) }
+  } else {
+    console.warn('⚠  --password terlihat di process list & shell history. Untuk produksi pakai mode interaktif, --gen, atau env var ADMIN_PASSWORD.\n')
   }
 
   // Validate
@@ -181,7 +226,7 @@ async function main() {
   env = upsertEnv(env, 'ADMIN_PASSWORD_HASH', hash)
   if (username) env = upsertEnv(env, 'ADMIN_USERNAME', username)
 
-  fs.writeFileSync(ENV_PATH, env, { mode: 0o600 })
+  writeEnvAtomic(ENV_PATH, env)
   console.log('')
   console.log('═══════════════════════════════════════════════════════')
   console.log('  ✅ BERHASIL — password admin sudah di-update di .env')

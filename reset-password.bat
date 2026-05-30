@@ -72,16 +72,29 @@ if not "%RC%"=="0" (
     goto :pause_end
 )
 
-REM --- Stop running node processes (so .env is re-read) -------------------
-tasklist /FI "IMAGENAME eq node.exe" 2>nul | find /I "node.exe" >nul
-if not errorlevel 1 (
+REM --- Resolve backend port from .env (fallback 9000) ---------------------
+set "APP_PORT=9000"
+for /f "usebackq tokens=1,* delims==" %%K in ("%BACKEND_DIR%\.env") do (
+    if /I "%%K"=="PORT" set "APP_PORT=%%L"
+)
+REM Trim possible surrounding spaces/quotes from the value
+set "APP_PORT=%APP_PORT: =%"
+set "APP_PORT=%APP_PORT:"=%"
+
+REM --- Find the PID that owns the backend port ----------------------------
+set "BACKEND_PID="
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":%APP_PORT% .*LISTENING"') do (
+    if not defined BACKEND_PID set "BACKEND_PID=%%P"
+)
+
+if defined BACKEND_PID (
     echo.
-    echo [i] Backend ^(node.exe^) terdeteksi sedang jalan.
+    echo [i] Backend terdeteksi jalan di port %APP_PORT% ^(PID %BACKEND_PID%^).
     set /p "ANS=    Stop dan restart backend otomatis? [Y/n] "
     if /I "!ANS!"=="" set "ANS=Y"
     if /I "!ANS!"=="y" (
-        echo [i] Stopping node processes...
-        taskkill /F /IM node.exe >nul 2>nul
+        echo [i] Stopping PID !BACKEND_PID! ...
+        taskkill /F /PID !BACKEND_PID! >nul 2>nul
         timeout /t 1 /nobreak >nul
 
         REM Start backend in a NEW window so password change takes effect
@@ -91,18 +104,18 @@ if not errorlevel 1 (
         echo [v] Backend restarted. Cek window baru bertitle "RadFast Backend".
     ) else (
         echo [!] Anda HARUS stop dan start ulang backend manual:
-        echo       taskkill /F /IM node.exe
+        echo       taskkill /F /PID !BACKEND_PID!
         echo       cd /d "%BACKEND_DIR%" ^&^& node server.js
     )
 ) else (
     echo.
-    echo [i] Backend tidak terdeteksi jalan. Start manual:
+    echo [i] Backend tidak terdeteksi jalan di port %APP_PORT%. Start manual:
     echo       cd /d "%BACKEND_DIR%" ^&^& node server.js
 )
 
 echo.
 echo ===========================================================================
-echo   SELESAI - silakan login dengan password baru di http://localhost:9000
+echo   SELESAI - silakan login dengan password baru di http://localhost:%APP_PORT%
 echo ===========================================================================
 
 :pause_end

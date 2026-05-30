@@ -88,6 +88,10 @@
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
             Install L2TP
           </button>
+          <button @click="openPoolModal('l2tp')" class="btn-secondary" title="Atur IP Pool L2TP">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            IP Pool
+          </button>
           <button @click="openAddL2tp = true" class="btn-primary">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
             Add User
@@ -212,6 +216,10 @@
           <button v-if="!status.wireguard?.running" @click="openInstallWg = true" class="btn-secondary">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
             Install WireGuard
+          </button>
+          <button @click="openPoolModal('wireguard')" class="btn-secondary" title="Atur IP Pool WireGuard">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            IP Pool
           </button>
           <button @click="openAddWg = true" class="btn-primary">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -490,7 +498,7 @@
               <input v-model="addWgForm.note" type="text" placeholder="Lokasi / nama ISP" />
             </div>
             <div class="rf-info-box rf-info-box-success">
-              Keys di-generate otomatis · Peer IP: <code>10.8.1.{{ wgPeers.length + 2 }}</code>
+              Keys di-generate otomatis · Peer IP: <code>{{ wgNextIpPreview }}</code>
             </div>
           </div>
           <footer class="rf-modal-foot">
@@ -498,6 +506,67 @@
             <button @click="addWgPeer" :disabled="addLoading" class="btn-primary">
               <span v-if="addLoading" class="rf-spinner" style="width:14px;height:14px;border-width:2px"></span>
               {{ addLoading ? 'Creating…' : 'Create Peer' }}
+            </button>
+          </footer>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- ═══ Modal: Pool Settings ═══ -->
+    <Transition name="modal">
+      <div v-if="openPoolSettings" class="rf-modal" @click.self="openPoolSettings = false">
+        <div class="modal-box rf-modal-card" style="max-width:520px">
+          <header class="rf-modal-head">
+            <div class="rf-modal-head-left">
+              <span class="rf-modal-icon" style="background:var(--info-soft);color:var(--info)">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+              </span>
+              <div>
+                <h3>IP Pool Settings — {{ poolForm.type === 'l2tp' ? 'L2TP/IPsec' : 'WireGuard' }}</h3>
+                <p>Subnet saat ini harus format /24.</p>
+              </div>
+            </div>
+            <button @click="openPoolSettings = false" class="rf-modal-close">×</button>
+          </header>
+          <div class="rf-modal-body">
+            <div class="rf-form-field">
+              <label>Subnet</label>
+              <input v-model="poolForm.subnet" type="text" placeholder="192.168.42.0/24" />
+            </div>
+
+            <template v-if="poolForm.type === 'l2tp'">
+              <div class="rf-form-field">
+                <label>Gateway / Local IP</label>
+                <input v-model="poolForm.local_ip" type="text" placeholder="192.168.42.1" />
+              </div>
+              <div class="rf-grid-2" style="gap:12px">
+                <div class="rf-form-field" style="margin-bottom:0">
+                  <label>Range Start</label>
+                  <input v-model="poolForm.range_start" type="text" placeholder="192.168.42.10" />
+                </div>
+                <div class="rf-form-field" style="margin-bottom:0">
+                  <label>Range End</label>
+                  <input v-model="poolForm.range_end" type="text" placeholder="192.168.42.100" />
+                </div>
+              </div>
+            </template>
+
+            <template v-else>
+              <div class="rf-form-field">
+                <label>Server VPN IP</label>
+                <input v-model="poolForm.server_vpn_ip" type="text" placeholder="10.8.1.1" />
+              </div>
+              <div class="rf-form-field">
+                <label>Next Peer IP Octet</label>
+                <input v-model.number="poolForm.next_ip" type="number" min="2" max="254" />
+              </div>
+            </template>
+          </div>
+          <footer class="rf-modal-foot">
+            <button @click="openPoolSettings = false" class="btn-secondary">Cancel</button>
+            <button @click="savePoolSettings" :disabled="poolLoading" class="btn-primary">
+              <span v-if="poolLoading" class="rf-spinner" style="width:14px;height:14px;border-width:2px"></span>
+              {{ poolLoading ? 'Saving…' : 'Save Pool' }}
             </button>
           </footer>
         </div>
@@ -752,6 +821,9 @@ const openInstallL2tp = ref(false)
 const openAddL2tp     = ref(false)
 const openInstallWg   = ref(false)
 const openAddWg       = ref(false)
+const openPoolSettings = ref(false)
+const poolLoading     = ref(false)
+const poolForm        = ref({ type:'l2tp', subnet:'', local_ip:'', range_start:'', range_end:'', server_vpn_ip:'', next_ip:2 })
 const openLimitWg     = ref(false)
 const limitLoading    = ref(false)
 const limitForm       = ref({ name: '', peer_ip: '', rate_down: 0, rate_up: 0, _type: 'wg' })
@@ -771,6 +843,15 @@ const tabs = computed(() => [
   { id: 'l2tp',      label: 'L2TP / IPsec', icon: icoShield, count: l2tpUsers.value.length },
   { id: 'wireguard', label: 'WireGuard',    icon: icoWg,     count: wgPeers.value.length },
 ])
+
+const wgPrefix = computed(() => {
+  const m = String(wgConfig.value.subnet || '10.8.1.0/24').match(/^(\d{1,3}\.\d{1,3}\.\d{1,3})\.0\/24$/)
+  return m ? m[1] + '.' : '10.8.1.'
+})
+const wgNextIpPreview = computed(() => {
+  if (wgConfig.value.next_ip) return `${wgPrefix.value}${wgConfig.value.next_ip}`
+  return `${wgPrefix.value}${(wgPeers.value.length || 0) + 2}`
+})
 
 async function fetchAll() {
   // allSettled: satu request gagal tidak menghalangi yang lain
@@ -857,6 +938,50 @@ async function deleteWgPeer(name) {
   if (!confirm(`Hapus WireGuard peer "${name}"?`)) return
   try { await axios.delete(`/api/vpn/wireguard/peers/${name}`); await fetchAll() }
   catch (e) { alert(e.response?.data?.message || 'Gagal hapus') }
+}
+
+function openPoolModal(type) {
+  if (type === 'l2tp') {
+    poolForm.value = {
+      type: 'l2tp',
+      subnet:     l2tpConfig.value.subnet     || '192.168.42.0/24',
+      local_ip:   l2tpConfig.value.local_ip   || '192.168.42.1',
+      range_start:l2tpConfig.value.range_start || '192.168.42.10',
+      range_end:  l2tpConfig.value.range_end  || '192.168.42.100',
+    }
+  } else {
+    poolForm.value = {
+      type: 'wireguard',
+      subnet:       wgConfig.value.subnet       || '10.8.1.0/24',
+      server_vpn_ip:wgConfig.value.server_vpn_ip || '10.8.1.1',
+      next_ip:      wgConfig.value.next_ip      || 2,
+    }
+  }
+  openPoolSettings.value = true
+}
+
+async function savePoolSettings() {
+  poolLoading.value = true
+  try {
+    if (poolForm.value.type === 'l2tp') {
+      await axios.put('/api/vpn/l2tp/config', {
+        subnet:     poolForm.value.subnet,
+        local_ip:   poolForm.value.local_ip,
+        range_start:poolForm.value.range_start,
+        range_end:  poolForm.value.range_end,
+      })
+    } else {
+      await axios.put('/api/vpn/wireguard/config', {
+        subnet:       poolForm.value.subnet,
+        server_vpn_ip:poolForm.value.server_vpn_ip,
+        next_ip:      poolForm.value.next_ip,
+      })
+    }
+    openPoolSettings.value = false
+    showToast('✓ IP Pool berhasil diperbarui')
+    await fetchAll()
+  } catch (e) { alert(e.response?.data?.message || 'Gagal simpan IP Pool') }
+  finally { poolLoading.value = false }
 }
 
 function openLimitModal(peer, type = 'wg') {

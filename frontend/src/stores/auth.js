@@ -128,6 +128,24 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   // ───────────────────────────────────────────────────────────────────────
+  // Provisioning API key management
+  // ───────────────────────────────────────────────────────────────────────
+  async function getProvisioningKey() {
+    const res = await axios.get('/api/auth/provisioning-key')
+    return res.data // { enabled, source, masked, updatedAt }
+  }
+
+  async function generateProvisioningKey() {
+    const res = await axios.post('/api/auth/provisioning-key/generate')
+    return res.data // { apiKey, mask, warning }
+  }
+
+  async function setProvisioningKey(apiKey) {
+    const res = await axios.put('/api/auth/provisioning-key', { apiKey })
+    return res.data // { ok, mask, updatedAt }
+  }
+
+  // ───────────────────────────────────────────────────────────────────────
   // Internals
   // ───────────────────────────────────────────────────────────────────────
   function _persist(newAdmin) {
@@ -193,5 +211,6 @@ export const useAuthStore = defineStore('auth', () => {
     // actions
     login, verify2FA, cancelChallenge, logout, restore, installInterceptors,
     setup2FA, enable2FA, disable2FA,
+    getProvisioningKey, generateProvisioningKey, setProvisioningKey,
   }
 })

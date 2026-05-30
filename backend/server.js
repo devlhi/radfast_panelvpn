@@ -13,7 +13,7 @@ const errors = require('./lib/errors')
 const auth = require('./middleware/auth')
 const csrf = require('./lib/csrf')
 const threatGuard = require('./middleware/threatGuard')
-const { apiLimiter } = require('./lib/limiters')
+const { apiLimiter, provisionLimiter } = require('./lib/limiters')
 
 const app = express()
 
@@ -116,6 +116,9 @@ app.use('/api', apiLimiter)
 
 // ── Public auth routes ─────────────────────────────────────────────────────
 app.use('/api/auth', require('./routes/auth'))
+
+// ── Provisioning API (server-to-server, API key auth, separate rate-limit) ─
+app.use('/api/provision', require('./lib/provisioningAuth'), provisionLimiter, require('./routes/provision'))
 
 // ── Protected routes ───────────────────────────────────────────────────────
 app.use('/api/instances', auth, require('./routes/instances'))

@@ -97,11 +97,74 @@
         </div>
       </div>
     </section>
+
+    <!-- ═══ Provisioning API Key Card ════════════════════════════════════ -->
+    <section class="rf-card" style="margin-top: 24px;">
+      <div class="rf-card-head">
+        <div>
+          <h2>Provisioning API Key</h2>
+          <p>Key untuk billing/portal membuat instance GenieACS lewat API (header <code>X-API-Key</code>).</p>
+        </div>
+        <span class="rf-badge" :class="keyMeta.enabled ? 'rf-badge-on' : 'rf-badge-off'">
+          {{ keyMeta.enabled ? 'Aktif' : 'Belum diset' }}
+        </span>
+      </div>
+
+      <div class="rf-card-body">
+        <p class="rf-help" v-if="keyMeta.enabled">
+          Key aktif: <code class="rf-secret">{{ keyMeta.masked }}</code>
+          <template v-if="keyMeta.source"> · sumber: <strong>{{ keyMeta.source }}</strong></template>
+          <template v-if="keyMeta.updatedAt"> · diubah: {{ formatDate(keyMeta.updatedAt) }}</template>
+        </p>
+        <p class="rf-help" v-else>
+          Belum ada API key. Generate otomatis atau masukkan manual (minimal 32 karakter).
+        </p>
+
+        <!-- Newly generated key shown ONCE -->
+        <div v-if="newKey" class="rf-recovery">
+          <h4>🔑 API Key Baru</h4>
+          <p class="rf-help">{{ newKeyWarning }}</p>
+          <code class="rf-secret" style="display:block; word-break:break-all; margin:10px 0;">{{ newKey }}</code>
+          <div class="rf-actions">
+            <button class="rf-btn rf-btn-ghost" @click="copyNewKey">📋 Copy key</button>
+            <button class="rf-btn rf-btn-primary" @click="dismissNewKey">Saya sudah simpan</button>
+          </div>
+          <p v-if="copyOk" class="rf-help" style="color:#065f46;">Tersalin ke clipboard.</p>
+        </div>
+
+        <template v-else>
+          <div class="rf-actions">
+            <button class="rf-btn rf-btn-primary" @click="generateKey" :disabled="keyBusy">
+              {{ keyBusy ? 'Memproses…' : (keyMeta.enabled ? 'Generate ulang' : 'Generate key') }}
+            </button>
+            <button class="rf-btn rf-btn-ghost" @click="showManual = !showManual" :disabled="keyBusy">
+              {{ showManual ? 'Tutup input manual' : 'Set manual' }}
+            </button>
+          </div>
+
+          <div v-if="showManual" class="rf-disable-form" style="max-width:100%;">
+            <p class="rf-help">Masukkan API key (min. 32 karakter):</p>
+            <input v-model="manualKey" type="text" placeholder="rfprov_…"
+                   class="rf-input-text" style="max-width:100%;" />
+            <div class="rf-actions">
+              <button class="rf-btn rf-btn-primary" @click="saveManualKey" :disabled="keyBusy">
+                {{ keyBusy ? 'Menyimpan…' : 'Simpan key' }}
+              </button>
+              <button class="rf-btn rf-btn-ghost" @click="showManual=false; manualKey=''" :disabled="keyBusy">
+                Batal
+              </button>
+            </div>
+          </div>
+        </template>
+
+        <p v-if="keyError" class="rf-err">{{ keyError }}</p>
+      </div>
+    </section>
   </div>
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useAuthStore } from '../stores/auth'
 
 const auth = useAuthStore()
@@ -114,6 +177,83 @@ const recoveryCodes = ref([])
 const showDisable = ref(false)
 const disablePass = ref('')
 const disableError = ref('')
+
+// ─── Provisioning API key state ───
+const keyMeta = ref({ enabled: false, source: 'none', masked: '', updatedAt: null })
+const keyBusy = ref(false)
+const keyError = ref('')
+const showManual = ref(false)
+const manualKey = ref('')
+const newKey = ref('')
+const newKeyWarning = ref('')
+const copyOk = ref(false)
+
+onMounted(loadKeyMeta)
+
+async function loadKeyMeta() {
+  try {
+    keyMeta.value = await auth.getProvisioningKey()
+  } catch (e) {
+    keyError.value = e.response?.data?.message || 'Gagal memuat status API key.'
+  }
+}
+
+async function generateKey() {
+  keyBusy.value = true
+  keyError.value = ''
+  try {
+    const res = await auth.generateProvisioningKey()
+    newKey.value = res.apiKey
+    newKeyWarning.value = res.warning || 'Simpan key ini sekarang.'
+    showManual.value = false
+    await loadKeyMeta()
+  } catch (e) {
+    keyError.value = e.response?.data?.message || 'Gagal generate API key.'
+  } finally {
+    keyBusy.value = false
+  }
+}
+
+async function saveManualKey() {
+  const key = manualKey.value.trim()
+  if (key.length < 32) {
+    keyError.value = 'API key minimal 32 karakter.'
+    return
+  }
+  keyBusy.value = true
+  keyError.value = ''
+  try {
+    await auth.setProvisioningKey(key)
+    manualKey.value = ''
+    showManual.value = false
+    await loadKeyMeta()
+  } catch (e) {
+    keyError.value = e.response?.data?.message || 'Gagal menyimpan API key.'
+  } finally {
+    keyBusy.value = false
+  }
+}
+
+async function copyNewKey() {
+  try {
+    await navigator.clipboard.writeText(newKey.value)
+    copyOk.value = true
+  } catch {}
+}
+
+function dismissNewKey() {
+  newKey.value = ''
+  newKeyWarning.value = ''
+  copyOk.value = false
+}
+
+function formatDate(iso) {
+  try {
+    return new Date(iso).toLocaleString('id-ID')
+  } catch {
+    return iso
+  }
+}
 
 async function startEnroll() {
   busy.value = true

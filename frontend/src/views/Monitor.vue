@@ -203,7 +203,7 @@
           <div v-if="!services.length" class="rf-empty-row">
             <div class="rf-spinner"></div><span>Memuat services…</span>
           </div>
-          <div v-for="svc in services" :key="svc.name" class="rf-list-row">
+          <div v-for="svc in svcPager.paged.value" :key="svc.name" class="rf-list-row">
             <span class="dot" :class="svc.running ? 'dot-success' : 'dot-muted'"></span>
             <div class="rf-list-info">
               <div class="rf-list-name">{{ svc.name }}</div>
@@ -213,6 +213,15 @@
               {{ svc.running ? 'Running' : 'Stopped' }}
             </span>
           </div>
+        </div>
+        <div v-if="services.length > svcPageSize" class="rf-pagination compact">
+          <button class="rf-page-btn" :disabled="svcPage <= 1" @click="svcPager.setPage(svcPage - 1)">‹</button>
+          <template v-for="p in svcPager.paginationPages.value" :key="p">
+            <span v-if="p === '...'" class="rf-page-dots">…</span>
+            <button v-else class="rf-page-btn rf-page-num" :class="{ active: p === svcPage }" @click="svcPager.setPage(p)">{{ p }}</button>
+          </template>
+          <button class="rf-page-btn" :disabled="svcPage >= svcPager.totalPages.value" @click="svcPager.setPage(svcPage + 1)">›</button>
+          <span class="rf-page-info">{{ svcPager.info.value }}</span>
         </div>
       </article>
 
@@ -233,7 +242,7 @@
           <div v-if="!topProcs.length" class="rf-empty-row">
             <div class="rf-spinner"></div><span>Memuat proses…</span>
           </div>
-          <div v-for="proc in topProcs" :key="proc.pid" class="rf-list-row">
+          <div v-for="proc in topPager.paged.value" :key="proc.pid" class="rf-list-row">
             <code class="rf-pid">{{ String(proc.pid).slice(-4) }}</code>
             <div class="rf-list-info">
               <div class="rf-list-name">{{ proc.name }}</div>
@@ -252,6 +261,15 @@
               {{ killingPid === String(proc.pid) ? '…' : '✕' }}
             </button>
           </div>
+        </div>
+        <div v-if="topProcs.length > topPageSize" class="rf-pagination compact">
+          <button class="rf-page-btn" :disabled="topPage <= 1" @click="topPager.setPage(topPage - 1)">‹</button>
+          <template v-for="p in topPager.paginationPages.value" :key="p">
+            <span v-if="p === '...'" class="rf-page-dots">…</span>
+            <button v-else class="rf-page-btn rf-page-num" :class="{ active: p === topPage }" @click="topPager.setPage(p)">{{ p }}</button>
+          </template>
+          <button class="rf-page-btn" :disabled="topPage >= topPager.totalPages.value" @click="topPager.setPage(topPage + 1)">›</button>
+          <span class="rf-page-info">{{ topPager.info.value }}</span>
         </div>
       </article>
     </section>
@@ -283,7 +301,7 @@
           <div v-if="!memProcs.length" class="rf-empty-row">
             <div class="rf-spinner"></div><span>Memuat data RAM…</span>
           </div>
-          <div v-for="proc in memProcs" :key="proc.pid" class="rf-list-row">
+          <div v-for="proc in memPager.paged.value" :key="proc.pid" class="rf-list-row">
             <code class="rf-pid">{{ String(proc.pid).slice(-4) }}</code>
             <div class="rf-list-info">
               <div class="rf-list-name">{{ proc.name }}</div>
@@ -302,6 +320,15 @@
               {{ killingPid === String(proc.pid) ? '…' : '✕' }}
             </button>
           </div>
+        </div>
+        <div v-if="memProcs.length > memPageSize" class="rf-pagination compact">
+          <button class="rf-page-btn" :disabled="memPage <= 1" @click="memPager.setPage(memPage - 1)">‹</button>
+          <template v-for="p in memPager.paginationPages.value" :key="p">
+            <span v-if="p === '...'" class="rf-page-dots">…</span>
+            <button v-else class="rf-page-btn rf-page-num" :class="{ active: p === memPage }" @click="memPager.setPage(p)">{{ p }}</button>
+          </template>
+          <button class="rf-page-btn" :disabled="memPage >= memPager.totalPages.value" @click="memPager.setPage(memPage + 1)">›</button>
+          <span class="rf-page-info">{{ memPager.info.value }}</span>
         </div>
       </article>
 
@@ -413,7 +440,7 @@
         </div>
 
         <!-- Per-instance groups -->
-        <div v-for="inst in acsLimits.instances || []" :key="inst.name" class="rf-inst-group">
+        <div v-for="inst in acsInstPager.paged.value" :key="inst.name" class="rf-inst-group">
           <div class="rf-inst-head">
             <strong>{{ inst.name }}</strong>
             <code v-if="inst.nodeOptions" class="rf-inst-opts">{{ inst.nodeOptions }}</code>
@@ -438,6 +465,17 @@
             </div>
           </div>
         </div>
+        <div v-if="(acsLimits.instances || []).length > instPageSize" class="rf-pagination">
+          <button class="rf-page-btn" :disabled="instPage <= 1" @click="acsInstPager.setPage(1)" title="First">«</button>
+          <button class="rf-page-btn" :disabled="instPage <= 1" @click="acsInstPager.setPage(instPage - 1)" title="Prev">‹</button>
+          <template v-for="p in acsInstPager.paginationPages.value" :key="p">
+            <span v-if="p === '...'" class="rf-page-dots">…</span>
+            <button v-else class="rf-page-btn rf-page-num" :class="{ active: p === instPage }" @click="acsInstPager.setPage(p)">{{ p }}</button>
+          </template>
+          <button class="rf-page-btn" :disabled="instPage >= acsInstPager.totalPages.value" @click="acsInstPager.setPage(instPage + 1)" title="Next">›</button>
+          <button class="rf-page-btn" :disabled="instPage >= acsInstPager.totalPages.value" @click="acsInstPager.setPage(acsInstPager.totalPages.value)" title="Last">»</button>
+          <span class="rf-page-info">{{ acsInstPager.info.value }}</span>
+        </div>
       </article>
     </section>
   </div>
@@ -451,6 +489,12 @@ const stats = ref({})
 const services = ref([])
 const topProcs = ref([])
 const memProcs = ref([])
+
+// ── Pagination states ─────────────────────────────────────────────────────
+const svcPage = ref(1); const svcPageSize = ref(10)
+const topPage = ref(1); const topPageSize = ref(10)
+const memPage = ref(1); const memPageSize = ref(10)
+const instPage = ref(1); const instPageSize = ref(5)
 const cpuHistory = ref(Array(30).fill(0))
 const netRxHistory = ref(Array(30).fill(0))
 const netTxHistory = ref(Array(30).fill(0))
@@ -470,6 +514,36 @@ const memApplyBusy = ref(false)
 const memApplyOk = ref('')
 const memApplyErr = ref('')
 let timer = null
+
+// ── Pagination computeds ───────────────────────────────────────────────────
+function makePager(pageRef, pageSizeRef, sourceRef, wrapFn) {
+  const totalPages = computed(() => Math.max(1, Math.ceil(sourceRef.value.length / pageSizeRef.value)))
+  const paged = computed(() => {
+    if (pageRef.value > totalPages.value) pageRef.value = totalPages.value
+    const s = (pageRef.value - 1) * pageSizeRef.value
+    return sourceRef.value.slice(s, s + pageSizeRef.value)
+  })
+  function setPage(n) { pageRef.value = Math.min(Math.max(1, n), totalPages.value) }
+  const paginationPages = computed(() => {
+    const t = totalPages.value, c = pageRef.value
+    if (t <= 7) return Array.from({ length: t }, (_, i) => i + 1)
+    const p = [1]
+    if (c > 3) p.push('...')
+    for (let i = Math.max(2, c - 1); i <= Math.min(t - 1, c + 1); i++) p.push(i)
+    if (c < t - 2) p.push('...')
+    p.push(t)
+    return p
+  })
+  const info = computed(() => {
+    const src = sourceRef.value
+    return `${src.length} total · ${(pageRef.value - 1) * pageSizeRef.value + 1}–${Math.min(pageRef.value * pageSizeRef.value, src.length)}`
+  })
+  return { totalPages, paged, setPage, paginationPages, info }
+}
+const svcPager  = makePager(svcPage, svcPageSize, services)
+const topPager  = makePager(topPage, topPageSize, topProcs)
+const memPager  = makePager(memPage, memPageSize, memProcs)
+const acsInstPager = makePager(instPage, instPageSize, computed(() => acsLimits.value?.instances || []))
 
 function cpuColor(val) {
   if (!val || val <= 0) return { text: 'var(--text-muted)', bar: 'var(--border-strong)', soft: 'var(--bg-elevated)' }
@@ -1254,5 +1328,48 @@ onUnmounted(() => { stopTimer(); stopStream() })
   border-radius: 999px;
   min-width: 3px;
   transition: width .4s ease;
+}
+
+/* ─── Pagination ─── */
+.rf-pagination {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 12px 16px 16px;
+}
+.rf-pagination.compact {
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.rf-page-btn {
+  min-width: 30px;
+  height: 30px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all .15s;
+}
+.rf-page-btn:hover:not(:disabled) { background: var(--bg-elevated); color: var(--text-primary); border-color: var(--border-strong); }
+.rf-page-btn:disabled { opacity: .45; cursor: not-allowed; }
+.rf-page-num.active {
+  background: var(--accent, #605dff);
+  border-color: var(--accent, #605dff);
+  color: #fff;
+}
+.rf-page-dots { padding: 0 4px; color: var(--text-muted); }
+.rf-page-info {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: 'JetBrains Mono', monospace;
 }
 </style>

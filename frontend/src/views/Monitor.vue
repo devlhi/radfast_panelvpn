@@ -93,31 +93,87 @@
       </article>
     </section>
 
-    <!-- ═══ CPU Chart ═══ -->
-    <article class="rf-card">
-      <header class="rf-section-head">
-        <div class="rf-section-head-left">
-          <span class="rf-section-ic" style="background:var(--accent-soft);color:var(--accent)">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-          </span>
-          <div>
-            <h3>CPU History</h3>
-            <p>Real-time, last 30 seconds</p>
+    <!-- ═══ Modern charts ═══ -->
+    <section class="rf-grid-2">
+      <article class="rf-card rf-chart-card">
+        <header class="rf-section-head">
+          <div class="rf-section-head-left">
+            <span class="rf-section-ic" style="background:var(--accent-soft);color:var(--accent)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l5-6 4 4 7-9"/><path d="M14 6h5v5"/></svg>
+            </span>
+            <div>
+              <h3>CPU Realtime</h3>
+              <p>Smooth graph, last 90 seconds</p>
+            </div>
+          </div>
+          <code class="code-chip">{{ stats.cpu ?? 0 }}% now</code>
+        </header>
+        <div class="rf-line-chart cpu-modern">
+          <svg viewBox="0 0 300 120" preserveAspectRatio="none">
+            <defs>
+              <linearGradient id="cpuArea" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.32" />
+                <stop offset="100%" stop-color="var(--accent)" stop-opacity="0" />
+              </linearGradient>
+            </defs>
+            <path :d="areaPath(cpuHistory, 100)" fill="url(#cpuArea)" />
+            <path :d="linePath(cpuHistory, 100)" class="line cpu-line" />
+          </svg>
+          <div class="rf-chart-overlay">
+            <span>0%</span><span>50%</span><span>100%</span>
           </div>
         </div>
-        <code class="code-chip">{{ stats.cpu ?? 0 }}% now</code>
-      </header>
-      <div class="rf-chart">
-        <div v-for="(val, i) in cpuHistory" :key="i"
-          class="rf-bar"
-          :style="`height:${Math.max(val||0,2)}%;background:${cpuColor(val).bar};opacity:${0.35 + (i/cpuHistory.length)*0.65}`"
-          :title="`${val}%`"></div>
-      </div>
-      <div class="rf-chart-axis">
-        <span>30s lalu</span>
-        <span>sekarang</span>
-      </div>
-    </article>
+        <div class="rf-chart-axis"><span>90s lalu</span><span>sekarang</span></div>
+      </article>
+
+      <article class="rf-card rf-chart-card">
+        <header class="rf-section-head">
+          <div class="rf-section-head-left">
+            <span class="rf-section-ic" style="background:var(--info-soft);color:var(--info)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V4"/><path d="m5 11 7-7 7 7"/><path d="m19 13-7 7-7-7"/></svg>
+            </span>
+            <div>
+              <h3>Traffic VPS</h3>
+              <p>Interface aktif: {{ activeNet?.name || '—' }}</p>
+            </div>
+          </div>
+          <div class="net-pills">
+            <span class="net-pill down">↓ {{ formatRate(activeNet?.rx_sec || 0) }}</span>
+            <span class="net-pill up">↑ {{ formatRate(activeNet?.tx_sec || 0) }}</span>
+          </div>
+        </header>
+        <div class="rf-line-chart net-modern">
+          <svg viewBox="0 0 300 120" preserveAspectRatio="none">
+            <defs>
+              <linearGradient id="rxArea" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="var(--info)" stop-opacity="0.26" />
+                <stop offset="100%" stop-color="var(--info)" stop-opacity="0" />
+              </linearGradient>
+              <linearGradient id="txArea" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="var(--success)" stop-opacity="0.2" />
+                <stop offset="100%" stop-color="var(--success)" stop-opacity="0" />
+              </linearGradient>
+            </defs>
+            <path :d="areaPath(netRxHistory, maxNetRate)" fill="url(#rxArea)" />
+            <path :d="areaPath(netTxHistory, maxNetRate)" fill="url(#txArea)" />
+            <path :d="linePath(netRxHistory, maxNetRate)" class="line rx-line" />
+            <path :d="linePath(netTxHistory, maxNetRate)" class="line tx-line" />
+          </svg>
+          <div class="rf-chart-overlay">
+            <span>{{ formatRate(maxNetRate) }}</span><span>{{ formatRate(maxNetRate/2) }}</span><span>0 bps</span>
+          </div>
+        </div>
+        <div class="net-ifaces">
+          <div v-for="iface in stats.net || []" :key="iface.name" class="net-iface">
+            <span class="dot" :class="iface.up ? 'dot-success' : 'dot-muted'"></span>
+            <strong>{{ iface.name }}</strong>
+            <em>{{ iface.ip || 'no-ip' }}</em>
+            <span>↓ {{ formatRate(iface.rx_sec) }}</span>
+            <span>↑ {{ formatRate(iface.tx_sec) }}</span>
+          </div>
+        </div>
+      </article>
+    </section>
 
     <!-- ═══ Services + Processes ═══ -->
     <section class="rf-grid-2">
@@ -187,13 +243,15 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
 
 const stats = ref({})
 const services = ref([])
 const topProcs = ref([])
 const cpuHistory = ref(Array(30).fill(0))
+const netRxHistory = ref(Array(30).fill(0))
+const netTxHistory = ref(Array(30).fill(0))
 const autoRefresh = ref(true)
 let timer = null
 
@@ -216,12 +274,60 @@ function cpuLabel(val) {
   return 'Healthy'
 }
 
+const activeNet = computed(() => {
+  const list = stats.value?.net || []
+  if (!list.length) return null
+  return [...list].sort((a, b) => (b.up - a.up) || ((b.rx_sec + b.tx_sec) - (a.rx_sec + a.tx_sec)))[0]
+})
+
+const maxNetRate = computed(() => {
+  const m = Math.max(...netRxHistory.value, ...netTxHistory.value, 1)
+  return Math.max(1024, m)
+})
+
+function formatRate(bytesPerSec) {
+  const b = Number(bytesPerSec || 0)
+  if (b >= 1024 * 1024 * 1024) return `${(b / (1024 * 1024 * 1024)).toFixed(2)} Gbps`
+  if (b >= 1024 * 1024) return `${(b / (1024 * 1024)).toFixed(2)} Mbps`
+  if (b >= 1024) return `${(b / 1024).toFixed(1)} Kbps`
+  return `${b.toFixed(0)} bps`
+}
+
+function linePath(points, maxVal = 100) {
+  const vals = points.length ? points : [0]
+  const w = 300
+  const h = 120
+  const step = vals.length > 1 ? w / (vals.length - 1) : w
+  return vals.map((v, i) => {
+    const x = i * step
+    const y = h - ((Math.min(Math.max(v || 0, 0), maxVal) / maxVal) * h)
+    return `${i === 0 ? 'M' : 'L'}${x.toFixed(2)} ${y.toFixed(2)}`
+  }).join(' ')
+}
+
+function areaPath(points, maxVal = 100) {
+  const vals = points.length ? points : [0]
+  const w = 300
+  const h = 120
+  const step = vals.length > 1 ? w / (vals.length - 1) : w
+  const line = linePath(vals, maxVal)
+  const endX = ((vals.length - 1) * step).toFixed(2)
+  return `${line} L${endX} ${h} L0 ${h} Z`
+}
+
 async function fetchStats() {
   try {
     const res = await axios.get('/api/monitor/stats')
     stats.value = res.data
+
     cpuHistory.value.push(res.data.cpu || 0)
     if (cpuHistory.value.length > 30) cpuHistory.value.shift()
+
+    const net = (res.data.net || [])[0] || { rx_sec: 0, tx_sec: 0 }
+    netRxHistory.value.push(net.rx_sec || 0)
+    netTxHistory.value.push(net.tx_sec || 0)
+    if (netRxHistory.value.length > 30) netRxHistory.value.shift()
+    if (netTxHistory.value.length > 30) netTxHistory.value.shift()
   } catch (e) { console.error(e) }
 }
 
@@ -363,25 +469,90 @@ onUnmounted(stopTimer)
   margin-top: 2px;
 }
 
-/* ─── Chart ─── */
-.rf-chart {
-  display: flex; align-items: flex-end; gap: 3px;
-  height: 110px;
-  padding: 18px 20px 8px;
+/* ─── Modern charts ─── */
+.rf-chart-card { overflow: hidden; }
+.rf-line-chart {
+  position: relative;
+  height: 140px;
+  padding: 10px 18px 4px;
 }
-.rf-bar {
-  flex: 1;
-  min-height: 2px;
-  border-radius: 3px 3px 0 0;
-  transition: height .3s ease, opacity .3s ease;
+.rf-line-chart svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.rf-line-chart .line {
+  fill: none;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.cpu-line { stroke: var(--accent); }
+.rx-line { stroke: var(--info); }
+.tx-line { stroke: var(--success); }
+.rf-chart-overlay {
+  position: absolute;
+  right: 12px;
+  top: 12px;
+  bottom: 8px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  pointer-events: none;
+}
+.rf-chart-overlay span {
+  font-size: 10px;
+  color: var(--text-muted);
+  background: rgba(15, 23, 42, .38);
+  padding: 2px 6px;
+  border-radius: 999px;
+  font-family: 'JetBrains Mono', monospace;
 }
 .rf-chart-axis {
-  display: flex; justify-content: space-between;
-  padding: 4px 20px 16px;
+  display: flex;
+  justify-content: space-between;
+  padding: 2px 20px 14px;
   font-size: 10.5px;
   color: var(--text-muted);
   font-family: 'JetBrains Mono', monospace;
 }
+
+.net-pills { display: flex; gap: 6px; }
+.net-pill {
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 700;
+}
+.net-pill.down { background: var(--info-soft); color: var(--info); }
+.net-pill.up { background: var(--success-soft); color: var(--success); }
+
+.net-ifaces {
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+.net-iface {
+  display: grid;
+  grid-template-columns: auto auto 1fr auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11.5px;
+}
+.net-iface strong { color: var(--text-primary); font-size: 12px; }
+.net-iface em {
+  color: var(--text-muted);
+  font-style: normal;
+  font-family: 'JetBrains Mono', monospace;
+}
+.net-iface span {
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text-secondary);
+}
+.net-iface:last-child { border-bottom: none; }
 
 /* ─── Lists ─── */
 .rf-grid-2 {

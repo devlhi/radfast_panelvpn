@@ -74,6 +74,74 @@ function getUptime() {
 
 function getLoad() { return os.loadavg().map(l => l.toFixed(2)).join(', ') }
 
+// ─── Network traffic (per-interface) ───────────────────────────────────────
+// Baca counter RX/TX dari /proc/net/dev lalu hitung laju (bytes/detik) dari
+// selisih antar-sampel. State disimpan di memori antar request.
+const fs = require('fs')
+let prevNet = { time: 0, ifaces: {} }
+
+function readProcNetDev() {
+  const out = fs.readFileSync('/proc/net/dev', 'utf8')
+  const lines = out.trim().split('\n').slice(2) // buang 2 baris header
+  const result = {}
+  for (const line of lines) {
+    const idx = line.indexOf(':')
+    if (idx < 0) continue
+    const name = line.slice(0, idx).trim()
+    const cols = line.slice(idx + 1).trim().split(/\s+/).map(Number)
+    // cols[0] = RX bytes, cols[8] = TX bytes
+    result[name] = { rx: cols[0] || 0, tx: cols[8] || 0 }
+  }
+  return result
+}
+
+function isVirtualIface(name) {
+  return name === 'lo' ||
+    /^(veth|br-|docker|virbr|vmnet|tun|tap|wg|kube|cni|flannel|cali)/.test(name)
+}
+
+function getNetworkInfo() {
+  if (isWin) return []
+  return safe(() => {
+    const now = Date.now()
+    const cur = readProcNetDev()
+    const ifaceAddrs = os.networkInterfaces()
+    const dt = prevNet.time ? (now - prevNet.time) / 1000 : 0
+    const list = []
+
+    for (const [name, val] of Object.entries(cur)) {
+      if (isVirtualIface(name)) continue
+
+      const prev = prevNet.ifaces[name]
+      let rxSec = 0, txSec = 0
+      if (prev && dt > 0) {
+        rxSec = Math.max(0, (val.rx - prev.rx) / dt)
+        txSec = Math.max(0, (val.tx - prev.tx) / dt)
+      }
+
+      const addrs = ifaceAddrs[name] || []
+      const ipv4 = addrs.find(a => a.family === 'IPv4' || a.family === 4)
+
+      list.push({
+        name,
+        ip: ipv4 ? ipv4.address : null,
+        mac: ipv4 ? ipv4.mac : (addrs[0] ? addrs[0].mac : null),
+        up: !!ipv4,
+        rx_sec: Math.round(rxSec),
+        tx_sec: Math.round(txSec),
+        rx_total: val.rx,
+        tx_total: val.tx,
+      })
+    }
+
+    prevNet = { time: now, ifaces: cur }
+
+    // Interface dengan IP & traffic tertinggi tampil dulu.
+    list.sort((a, b) => (b.up - a.up) || ((b.rx_sec + b.tx_sec) - (a.rx_sec + a.tx_sec)))
+    return list
+  }, [])
+}
+
 // ═════════════════════════════════════════════════════════════════════════
 router.get('/quick', (req, res) => {
   res.json({ cpu: getCpuPercent(), ram: getRamInfo().ram })
@@ -86,7 +154,12 @@ router.get('/stats', (req, res) => {
     ...getDiskInfo(),
     uptime: getUptime(),
     load: getLoad(),
+    net: getNetworkInfo(),
   })
+})
+
+router.get('/network', (req, res) => {
+  res.json(getNetworkInfo())
 })
 
 const SERVICES = [

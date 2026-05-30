@@ -118,7 +118,8 @@ app.use('/api', apiLimiter)
 app.use('/api/auth', require('./routes/auth'))
 
 // ── Provisioning API (server-to-server, API key auth, separate rate-limit) ─
-app.use('/api/provision', require('./lib/provisioningAuth'), provisionLimiter, require('./routes/provision'))
+// NOTE: rate limiter dipasang sebelum auth agar percobaan API key salah ikut dibatasi ketat.
+app.use('/api/provision', provisionLimiter, require('./lib/provisioningAuth'), require('./routes/provision'))
 
 // ── Protected routes ───────────────────────────────────────────────────────
 app.use('/api/instances', auth, require('./routes/instances'))

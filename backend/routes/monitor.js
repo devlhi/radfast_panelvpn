@@ -246,4 +246,65 @@ router.get('/processes', (req, res) => {
   }
 })
 
+// Proses paling boros RAM (sorted by RSS desc).
+router.get('/processes/memory', (req, res) => {
+  if (isWin) {
+    return res.json([
+      { pid: '5678', name: 'mongod', memPct: '6.2', mem: '120 MB' },
+      { pid: '1234', name: 'node',   memPct: '2.3', mem: '45 MB' },
+    ])
+  }
+  try {
+    const out = runCmdSync('ps', ['axo', 'pid,comm,%mem,rss', '--sort=-rss', '--no-headers'])
+    const procs = out.trim().split('\n').slice(0, 8).map(line => {
+      const [pid, name, memPct, rssKb] = line.trim().split(/\s+/)
+      return {
+        pid,
+        name: (name || '').split('/').pop(),
+        memPct,
+        mem: formatBytes((parseInt(rssKb) || 0) * 1024),
+      }
+    })
+    res.json(procs)
+  } catch {
+    res.json([])
+  }
+})
+
+// Kill SEMUA proses node sekaligus — kecuali backend ini + pm2 daemon,
+// supaya dashboard tetap hidup. GenieACS/multi-proxy yang dimanage systemd
+// akan otomatis di-restart oleh systemd setelah dibunuh.
+router.post('/processes/kill-node', async (req, res) => {
+  if (isWin) return res.status(501).json({ message: 'Hanya tersedia di Linux.' })
+  try {
+    const out = runCmdSync('ps', ['-eo', 'pid,comm,args', '--no-headers'])
+    const protect = new Set([process.pid, process.ppid])
+    const targets = []
+    for (const line of out.trim().split('\n')) {
+      const m = line.trim().match(/^(\d+)\s+(\S+)\s+(.*)$/)
+      if (!m) continue
+      const pid = parseInt(m[1], 10)
+      const comm = m[2]
+      const args = m[3] || ''
+      if (!/node/i.test(comm)) continue          // hanya proses node
+      if (protect.has(pid)) continue              // jangan bunuh diri sendiri / parent
+      if (/PM2|pm2/.test(args)) continue          // jangan bunuh pm2 God daemon
+      if (/radfast-admin|server\.js/.test(args)) continue // jangan bunuh backend
+      targets.push(pid)
+    }
+    const killed = []
+    const failed = []
+    for (const pid of targets) {
+      try { await runCmd('kill', ['-9', String(pid)], { timeout: 5_000 }); killed.push(pid) }
+      catch (e) {
+        if ((e.stderr || '').includes('No such process')) killed.push(pid)
+        else failed.push({ pid, error: (e.stderr || e.message || '').slice(-200) })
+      }
+    }
+    res.json({ message: `${killed.length} proses node dihentikan.`, killed, failed })
+  } catch (e) {
+    res.status(500).json({ message: (e.stderr || e.message || '').slice(-500) })
+  }
+})
+
 module.exports = router

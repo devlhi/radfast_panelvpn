@@ -255,6 +255,96 @@
         </div>
       </article>
     </section>
+
+    <!-- ═══ Memory Hogs + Kill All Node ═══ -->
+    <section class="rf-grid-2">
+      <article class="rf-card">
+        <header class="rf-section-head">
+          <div class="rf-section-head-left">
+            <span class="rf-section-ic" style="background:var(--danger-soft);color:var(--danger)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+            </span>
+            <div>
+              <h3>Memory Hogs</h3>
+              <p>Paling boros RAM, sorted desc</p>
+            </div>
+          </div>
+          <div class="rf-head-right">
+            <span class="badge badge-muted">{{ memProcs.length }}</span>
+            <button class="rf-inline-btn danger" :disabled="nodeKillBusy" @click="killAllNode">
+              <svg v-if="!nodeKillBusy" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+              {{ nodeKillBusy ? 'Killing…' : 'Kill All Node' }}
+            </button>
+          </div>
+        </header>
+        <div v-if="nodeKillErr" class="rf-action-err">{{ nodeKillErr }}</div>
+        <div v-else-if="nodeKillMsg" class="rf-action-ok">{{ nodeKillMsg }}</div>
+        <div class="rf-list">
+          <div v-if="!memProcs.length" class="rf-empty-row">
+            <div class="rf-spinner"></div><span>Memuat data RAM…</span>
+          </div>
+          <div v-for="proc in memProcs" :key="proc.pid" class="rf-list-row">
+            <code class="rf-pid">{{ String(proc.pid).slice(-4) }}</code>
+            <div class="rf-list-info">
+              <div class="rf-list-name">{{ proc.name }}</div>
+              <div class="rf-list-sub">PID {{ proc.pid }}</div>
+            </div>
+            <div class="rf-proc-stats">
+              <span class="rf-proc-mem-strong">{{ proc.memPct }}%</span>
+              <span class="rf-proc-mem">{{ proc.mem }}</span>
+            </div>
+            <button
+              class="rf-inline-btn danger"
+              :disabled="killingPid === String(proc.pid)"
+              @click="killProcess(proc)"
+              :title="`Kill PID ${proc.pid}`"
+            >
+              {{ killingPid === String(proc.pid) ? '…' : '✕' }}
+            </button>
+          </div>
+        </div>
+      </article>
+
+      <article class="rf-card rf-node-summary">
+        <header class="rf-section-head">
+          <div class="rf-section-head-left">
+            <span class="rf-section-ic" style="background:var(--warning-soft);color:var(--warning)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            </span>
+            <div>
+              <h3>System Actions</h3>
+              <p>Kill &amp; restart controls</p>
+            </div>
+          </div>
+        </header>
+        <div class="rf-action-cards">
+          <div class="rf-action-card danger-card">
+            <div class="rf-action-card-head">
+              <span class="rf-action-card-ic" style="background:var(--danger-soft);color:var(--danger)">⚠</span>
+              <div>
+                <strong>Kill All Node Process</strong>
+                <p>Hentikan semua proses Node.js sekaligus, kecuali backend ini. GenieACS / Multi-Proxy akan otomatis di-restart oleh systemd.</p>
+              </div>
+            </div>
+            <button class="rf-full-btn danger" :disabled="nodeKillBusy" @click="killAllNode">
+              {{ nodeKillBusy ? 'Menghentikan semua Node…' : 'Kill Semua Node' }}
+            </button>
+          </div>
+          <div class="rf-action-card ok-card">
+            <div class="rf-action-card-head">
+              <span class="rf-action-card-ic" style="background:var(--success-soft);color:var(--success)">⟳</span>
+              <div>
+                <strong>Rebuild Multi-Proxy</strong>
+                <p>Jalankan ulang enable-multi-proxy.sh. Akan patch worker=1 dan restart semua service GenieACS.</p>
+              </div>
+            </div>
+            <button class="rf-full-btn" :disabled="acsBusy" @click="runEnableMultiProxy">
+              {{ acsBusy ? 'Running…' : 'Run enable-multi-proxy' }}
+            </button>
+          </div>
+        </div>
+      </article>
+    </section>
   </div>
 </template>
 
@@ -265,6 +355,7 @@ import axios from 'axios'
 const stats = ref({})
 const services = ref([])
 const topProcs = ref([])
+const memProcs = ref([])
 const cpuHistory = ref(Array(30).fill(0))
 const netRxHistory = ref(Array(30).fill(0))
 const netTxHistory = ref(Array(30).fill(0))
@@ -273,6 +364,9 @@ const acsBusy = ref(false)
 const acsMsg = ref('')
 const acsErr = ref('')
 const killingPid = ref('')
+const nodeKillBusy = ref(false)
+const nodeKillMsg = ref('')
+const nodeKillErr = ref('')
 let timer = null
 
 function cpuColor(val) {
@@ -361,9 +455,14 @@ async function fetchProcs() {
   catch (e) { console.error(e) }
 }
 
+async function fetchMemProcs() {
+  try { const res = await axios.get('/api/monitor/processes/memory'); memProcs.value = res.data }
+  catch (e) { console.error(e) }
+}
+
 function startTimer() {
   if (timer) return
-  timer = setInterval(async () => { await fetchStats(); await fetchProcs() }, 3000)
+  timer = setInterval(async () => { await fetchStats(); await fetchProcs(); await fetchMemProcs() }, 3000)
 }
 function stopTimer() { clearInterval(timer); timer = null }
 function toggleAuto() {
@@ -372,7 +471,7 @@ function toggleAuto() {
 }
 
 onMounted(async () => {
-  await Promise.all([fetchStats(), fetchServices(), fetchProcs()])
+  await Promise.all([fetchStats(), fetchServices(), fetchProcs(), fetchMemProcs()])
   if (autoRefresh.value) startTimer()
 })
 async function runEnableMultiProxy() {
@@ -389,6 +488,7 @@ async function runEnableMultiProxy() {
     setTimeout(() => { acsMsg.value = ''; acsErr.value = '' }, 12000)
     await fetchServices()
     await fetchProcs()
+    await fetchMemProcs()
   }
 }
 
@@ -402,6 +502,26 @@ async function killProcess(proc) {
   } finally {
     killingPid.value = ''
     await fetchProcs()
+    await fetchMemProcs()
+  }
+}
+
+async function killAllNode() {
+  if (!confirm('Kill SEMUA proses node sekarang?')) return
+  nodeKillBusy.value = true
+  nodeKillMsg.value = ''
+  nodeKillErr.value = ''
+  try {
+    const res = await axios.post('/api/monitor/processes/kill-node')
+    nodeKillMsg.value = res.data?.message || 'Semua proses node dihentikan.'
+  } catch (e) {
+    nodeKillErr.value = e.response?.data?.message || e.message
+  } finally {
+    nodeKillBusy.value = false
+    setTimeout(() => { nodeKillMsg.value = ''; nodeKillErr.value = '' }, 12000)
+    await fetchServices()
+    await fetchProcs()
+    await fetchMemProcs()
   }
 }
 
@@ -710,4 +830,67 @@ onUnmounted(stopTimer)
   color: var(--info);
   margin-top: 2px;
 }
+.rf-proc-mem-strong {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--danger);
+}
+
+/* ─── Action cards (system panel) ─── */
+.rf-action-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 20px;
+}
+.rf-action-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  background: var(--bg-elevated);
+}
+.rf-action-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.rf-action-card-ic {
+  width: 32px; height: 32px;
+  min-width: 32px;
+  border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px;
+  font-weight: 700;
+}
+.rf-action-card-head strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 3px;
+}
+.rf-action-card-head p {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+.rf-full-btn {
+  width: 100%;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all .15s;
+  text-align: center;
+}
+.rf-full-btn:hover:not(:disabled) { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+.rf-full-btn:disabled { opacity: .55; cursor: not-allowed; }
+.rf-full-btn.danger { border-color: var(--danger); color: var(--danger); background: var(--danger-soft); }
+.rf-full-btn.danger:hover:not(:disabled) { background: var(--danger); color: #fff; }
 </style>

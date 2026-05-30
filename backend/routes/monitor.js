@@ -271,6 +271,120 @@ router.get('/processes/memory', (req, res) => {
   }
 })
 
+// ─── ACS Memory Limits (per-instance systemd MemoryMax + NODE_OPTIONS) ──
+const ACS_INSTANCES_DIR = process.env.RADFAST_INSTANCES_DIR || '/opt/genieacs-instances'
+const ACS_REGISTRY = process.env.RADFAST_REGISTRY || `${ACS_INSTANCES_DIR}/.registry`
+
+router.get('/acs/memory-limits', (req, res) => {
+  if (isWin) {
+    return res.json({
+      instances: [
+        { name: 'demo', nodeOptions: '--max-old-space-size=120', services: [
+          { name: 'genieacs-demo-cwmp', type: 'cwmp', active: true, memoryCurrent: '45 MB', memoryMax: '160 MB', memoryMaxRaw: 167772160 },
+        ]},
+      ],
+      multiProxy: { name: 'genieacs-multi-proxy', active: true, memoryCurrent: '80 MB', memoryMax: '256 MB', memoryMaxRaw: 268435456, nodeOptions: '--max-old-space-size=192' },
+    })
+  }
+
+  try {
+    // Baca registry
+    const regRaw = fs.existsSync(ACS_REGISTRY) ? fs.readFileSync(ACS_REGISTRY, 'utf8') : ''
+    const users = []
+    for (const line of regRaw.split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed || trimmed.startsWith('#')) continue
+      const uname = trimmed.split(/\s+/)[0]
+      if (uname && !users.includes(uname)) users.push(uname)
+    }
+
+    const instances = users.map(user => {
+      const envFile = `${ACS_INSTANCES_DIR}/${user}/.env`
+      let nodeOptions = ''
+      if (fs.existsSync(envFile)) {
+        const envRaw = fs.readFileSync(envFile, 'utf8')
+        const m = envRaw.match(/^NODE_OPTIONS="?([^"\n]+)"?/m)
+        if (m) nodeOptions = m[1]
+      }
+
+      const services = ['cwmp', 'nbi', 'fs', 'ui'].map(svc => {
+        const unitName = `genieacs-${user}-${svc}`
+        let active = false, memoryCurrent = 0, memoryMaxRaw = 0, memoryAccounting = false
+        try {
+          runCmdSync('systemctl', ['is-active', '--quiet', unitName])
+          active = true
+        } catch {}
+        try {
+          const show = runCmdSync('systemctl', ['show', unitName, '-p', 'MemoryCurrent', '-p', 'MemoryMax', '-p', 'MemoryAccounting'])
+          for (const line of show.split('\n')) {
+            if (line.startsWith('MemoryCurrent=')) {
+              const v = parseInt(line.split('=')[1])
+              memoryCurrent = isNaN(v) || v < 0 ? 0 : v
+            }
+            if (line.startsWith('MemoryMax=')) {
+              const raw = line.split('=')[1].trim()
+              memoryMaxRaw = (raw === 'infinity' || raw === '18446744073709551615') ? 0 : parseInt(raw) || 0
+            }
+            if (line.startsWith('MemoryAccounting=')) {
+              memoryAccounting = line.split('=')[1].trim() === 'yes'
+            }
+          }
+        } catch {}
+        return {
+          name: unitName,
+          type: svc,
+          active,
+          memoryCurrent: memoryCurrent > 0 ? formatBytes(memoryCurrent) : '—',
+          memoryMax: memoryMaxRaw > 0 ? formatBytes(memoryMaxRaw) : '∞',
+          memoryMaxRaw,
+          memoryAccounting,
+        }
+      })
+
+      return { name: user, nodeOptions, services }
+    })
+
+    // Multi-proxy
+    let mpActive = false, mpMemCur = 0, mpMemMax = 0, mpNodeOpts = ''
+    const mpUnit = 'genieacs-multi-proxy'
+    try {
+      runCmdSync('systemctl', ['is-active', '--quiet', mpUnit])
+      mpActive = true
+    } catch {}
+    try {
+      const show = runCmdSync('systemctl', ['show', mpUnit, '-p', 'MemoryCurrent', '-p', 'MemoryMax', '-p', 'Environment'])
+      for (const line of show.split('\n')) {
+        if (line.startsWith('MemoryCurrent=')) {
+          const v = parseInt(line.split('=')[1])
+          mpMemCur = isNaN(v) || v < 0 ? 0 : v
+        }
+        if (line.startsWith('MemoryMax=')) {
+          const raw = line.split('=')[1].trim()
+          mpMemMax = (raw === 'infinity' || raw === '18446744073709551615') ? 0 : parseInt(raw) || 0
+        }
+        if (line.startsWith('Environment=')) {
+          const envLine = line.slice('Environment='.length)
+          const m2 = envLine.match(/NODE_OPTIONS=(\S+)/)
+          if (m2) mpNodeOpts = m2[1]
+        }
+      }
+    } catch {}
+
+    const multiProxy = {
+      name: mpUnit,
+      active: mpActive,
+      memoryCurrent: mpMemCur > 0 ? formatBytes(mpMemCur) : '—',
+      memoryMax: mpMemMax > 0 ? formatBytes(mpMemMax) : '∞',
+      memoryMaxRaw: mpMemMax,
+      nodeOptions: mpNodeOpts,
+    }
+
+    res.json({ instances, multiProxy })
+  } catch (e) {
+    res.status(500).json({ message: (e.message || '').slice(-500) })
+  }
+})
+
 // Kill SEMUA proses node sekaligus — kecuali backend ini + pm2 daemon,
 // supaya dashboard tetap hidup. GenieACS/multi-proxy yang dimanage systemd
 // akan otomatis di-restart oleh systemd setelah dibunuh.

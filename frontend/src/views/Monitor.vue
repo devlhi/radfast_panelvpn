@@ -345,6 +345,81 @@
         </div>
       </article>
     </section>
+
+    <!-- ═══ ACS Memory Limits ═══ -->
+    <section>
+      <article class="rf-card">
+        <header class="rf-section-head">
+          <div class="rf-section-head-left">
+            <span class="rf-section-ic" style="background:var(--accent-soft);color:var(--accent)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+            </span>
+            <div>
+              <h3>Batas RAM GenieACS</h3>
+              <p>NODE_OPTIONS heap cap &amp; systemd MemoryMax per service</p>
+            </div>
+          </div>
+          <div class="rf-head-right">
+            <button class="rf-inline-btn" :disabled="limitsBusy" @click="fetchAcsLimits">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/></svg>
+              {{ limitsBusy ? 'Memuat…' : 'Refresh' }}
+            </button>
+          </div>
+        </header>
+
+        <!-- Multi-proxy row -->
+        <div v-if="acsLimits.multiProxy" class="rf-mp-row">
+          <span class="dot" :class="acsLimits.multiProxy.active ? 'dot-success' : 'dot-muted'"></span>
+          <div class="rf-list-info">
+            <div class="rf-list-name">{{ acsLimits.multiProxy.name }}</div>
+            <div class="rf-list-sub">
+              <code v-if="acsLimits.multiProxy.nodeOptions">{{ acsLimits.multiProxy.nodeOptions }}</code>
+              <span v-else>shared logo-proxy (1 process)</span>
+            </div>
+          </div>
+          <div class="rf-mem-cell">
+            <span class="rf-mem-cur">{{ acsLimits.multiProxy.memoryCurrent }}</span>
+            <span class="rf-mem-max">/ {{ acsLimits.multiProxy.memoryMax }}</span>
+          </div>
+          <span class="badge" :class="acsLimits.multiProxy.memoryMaxRaw ? 'badge-success' : 'badge-warning'">
+            {{ acsLimits.multiProxy.memoryMaxRaw ? 'Limit aktif' : 'Tanpa limit' }}
+          </span>
+        </div>
+
+        <div v-if="limitsErr" class="rf-action-err">{{ limitsErr }}</div>
+        <div v-if="!acsLimits.instances || !acsLimits.instances.length" class="rf-empty-row" style="margin-top:10px">
+          <span v-if="limitsBusy"><span class="rf-spinner"></span> Memuat batas RAM…</span>
+          <span v-else>Belum ada instance terdaftar.</span>
+        </div>
+
+        <!-- Per-instance groups -->
+        <div v-for="inst in acsLimits.instances || []" :key="inst.name" class="rf-inst-group">
+          <div class="rf-inst-head">
+            <strong>{{ inst.name }}</strong>
+            <code v-if="inst.nodeOptions" class="rf-inst-opts">{{ inst.nodeOptions }}</code>
+            <code v-else class="rf-inst-opts muted">NODE_OPTIONS belum di-patch</code>
+          </div>
+          <div class="rf-svc-grid">
+            <div v-for="svc in inst.services" :key="svc.name" class="rf-svc-cell">
+              <div class="rf-svc-top">
+                <span class="dot" :class="svc.active ? 'dot-success' : 'dot-muted'"></span>
+                <span class="rf-svc-type">{{ svc.type }}</span>
+                <span class="badge badge-sm" :class="svc.memoryMaxRaw ? 'badge-success' : 'badge-warning'">
+                  {{ svc.memoryMaxRaw ? 'capped' : 'no cap' }}
+                </span>
+              </div>
+              <div class="rf-svc-mem">
+                <strong>{{ svc.memoryCurrent }}</strong>
+                <span>/ {{ svc.memoryMax }}</span>
+              </div>
+              <div class="rf-svc-bar" v-if="svc.memoryMaxRaw">
+                <div class="rf-svc-bar-fill" :style="`width:${memPctOf(svc)}%;background:${memBarColor(svc)}`"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </article>
+    </section>
   </div>
 </template>
 
@@ -367,6 +442,9 @@ const killingPid = ref('')
 const nodeKillBusy = ref(false)
 const nodeKillMsg = ref('')
 const nodeKillErr = ref('')
+const acsLimits = ref({ instances: [], multiProxy: null })
+const limitsBusy = ref(false)
+const limitsErr = ref('')
 let timer = null
 
 function cpuColor(val) {
@@ -405,6 +483,28 @@ function formatRate(bytesPerSec) {
   if (b >= 1024 * 1024) return `${(b / (1024 * 1024)).toFixed(2)} Mbps`
   if (b >= 1024) return `${(b / 1024).toFixed(1)} Kbps`
   return `${b.toFixed(0)} bps`
+}
+
+function parseMemText(text) {
+  const s = String(text || '').trim()
+  const n = parseFloat(s)
+  if (!n) return 0
+  if (/GB/i.test(s)) return n * 1000
+  if (/MB/i.test(s)) return n
+  if (/KB/i.test(s)) return n / 1000
+  return n
+}
+function memPctOf(svc) {
+  const cur = parseMemText(svc.memoryCurrent)
+  const max = parseMemText(svc.memoryMax)
+  if (!cur || !max) return 0
+  return Math.min(100, Math.round((cur / max) * 100))
+}
+function memBarColor(svc) {
+  const p = memPctOf(svc)
+  if (p > 85) return 'var(--danger)'
+  if (p > 70) return 'var(--warning)'
+  return 'var(--success)'
 }
 
 function linePath(points, maxVal = 100) {
@@ -460,9 +560,22 @@ async function fetchMemProcs() {
   catch (e) { console.error(e) }
 }
 
+async function fetchAcsLimits() {
+  limitsBusy.value = true
+  limitsErr.value = ''
+  try {
+    const res = await axios.get('/api/monitor/acs/memory-limits')
+    acsLimits.value = res.data || { instances: [], multiProxy: null }
+  } catch (e) {
+    limitsErr.value = e.response?.data?.message || e.message
+  } finally {
+    limitsBusy.value = false
+  }
+}
+
 function startTimer() {
   if (timer) return
-  timer = setInterval(async () => { await fetchStats(); await fetchProcs(); await fetchMemProcs() }, 3000)
+  timer = setInterval(async () => { await fetchStats(); await fetchProcs(); await fetchMemProcs(); await fetchAcsLimits() }, 3000)
 }
 function stopTimer() { clearInterval(timer); timer = null }
 function toggleAuto() {
@@ -471,7 +584,7 @@ function toggleAuto() {
 }
 
 onMounted(async () => {
-  await Promise.all([fetchStats(), fetchServices(), fetchProcs(), fetchMemProcs()])
+  await Promise.all([fetchStats(), fetchServices(), fetchProcs(), fetchMemProcs(), fetchAcsLimits()])
   if (autoRefresh.value) startTimer()
 })
 async function runEnableMultiProxy() {
@@ -489,6 +602,7 @@ async function runEnableMultiProxy() {
     await fetchServices()
     await fetchProcs()
     await fetchMemProcs()
+    await fetchAcsLimits()
   }
 }
 
@@ -503,6 +617,7 @@ async function killProcess(proc) {
     killingPid.value = ''
     await fetchProcs()
     await fetchMemProcs()
+    await fetchAcsLimits()
   }
 }
 
@@ -522,6 +637,7 @@ async function killAllNode() {
     await fetchServices()
     await fetchProcs()
     await fetchMemProcs()
+    await fetchAcsLimits()
   }
 }
 
@@ -893,4 +1009,87 @@ onUnmounted(stopTimer)
 .rf-full-btn:disabled { opacity: .55; cursor: not-allowed; }
 .rf-full-btn.danger { border-color: var(--danger); color: var(--danger); background: var(--danger-soft); }
 .rf-full-btn.danger:hover:not(:disabled) { background: var(--danger); color: #fff; }
+
+/* ─── ACS Memory Limits ─── */
+.rf-mp-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 20px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+  border-radius: 14px 14px 0 0;
+}
+.rf-mem-cell {
+  display: flex; align-items: baseline; gap: 4px;
+  margin-left: auto;
+  font-family: 'JetBrains Mono', monospace;
+}
+.rf-mem-cur { font-weight: 700; font-size: 13px; color: var(--info); }
+.rf-mem-max { font-size: 11.5px; color: var(--text-muted); }
+
+.rf-inst-group {
+  border-bottom: 1px solid var(--border);
+}
+.rf-inst-group:last-child { border-bottom: none; }
+.rf-inst-head {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 20px;
+  background: rgba(99,102,241,.04);
+  border-bottom: 1px solid var(--border);
+}
+.rf-inst-head strong {
+  font-size: 13px; color: var(--text-primary); font-weight: 700;
+}
+.rf-inst-opts.muted { color: var(--text-muted); font-size: 11px; }
+.rf-inst-opts:not(.muted) {
+  font-size: 11px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.rf-svc-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0;
+}
+@media (max-width: 900px) { .rf-svc-grid { grid-template-columns: repeat(2, 1fr); } }
+.rf-svc-cell {
+  padding: 12px 18px;
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.rf-svc-cell:nth-child(4n) { border-right: none; }
+@media (max-width: 900px) {
+  .rf-svc-cell:nth-child(4n) { border-right: 1px solid var(--border); }
+  .rf-svc-cell:nth-child(2n) { border-right: none; }
+}
+.rf-svc-top {
+  display: flex; align-items: center; gap: 6px;
+}
+.rf-svc-type {
+  font-size: 12px; font-weight: 700; color: var(--text-primary);
+  text-transform: uppercase;
+  letter-spacing: .02em;
+}
+.badge.sm, .badge-sm { font-size: 9.5px; padding: 2px 6px; }
+.rf-svc-mem {
+  display: flex; align-items: baseline; gap: 4px;
+  font-family: 'JetBrains Mono', monospace;
+}
+.rf-svc-mem strong { font-size: 13px; color: var(--info); }
+.rf-svc-mem span  { font-size: 11px; color: var(--text-muted); }
+.rf-svc-bar {
+  height: 4px;
+  background: var(--bg-elevated);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.rf-svc-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  min-width: 3px;
+  transition: width .4s ease;
+}
 </style>

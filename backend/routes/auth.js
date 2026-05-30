@@ -300,6 +300,23 @@ router.post('/provisioning-key/generate', auth, (req, res) => {
   }
 })
 
+router.post('/provisioning-key/rotate', auth, (req, res) => {
+  try {
+    const result = keyStore.rotate()
+    audit.record('provision.key_rotated', { username: req.admin.sub }, req)
+
+    res.json({
+      apiKey: result.apiKey,
+      mask: keyStore.mask(result.apiKey),
+      updatedAt: result.updatedAt,
+      warning: 'Key baru aktif sekarang. Update X-API-Key di billing sebelum key lama dihapus.',
+      expiresAt: keyStore.getMeta().expiresAt,
+    })
+  } catch (e) {
+    return res.status(500).json({ message: e.message || 'Gagal rotate API key.' })
+  }
+})
+
 router.put('/provisioning-key', auth,
   body('apiKey').isString().isLength({ min: 32, max: 256 }),
   (req, res) => {
@@ -314,6 +331,7 @@ router.put('/provisioning-key', auth,
         ok: true,
         mask: result.apiKey ? keyStore.mask(result.apiKey) : '',
         updatedAt: result.updatedAt,
+        expiresAt: keyStore.getMeta().expiresAt,
       })
     } catch (e) {
       return res.status(400).json({ message: e.message || 'Gagal menyimpan API key.' })

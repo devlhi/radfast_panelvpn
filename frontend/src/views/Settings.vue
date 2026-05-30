@@ -115,6 +115,11 @@
           Key aktif: <code class="rf-secret">{{ keyMeta.masked }}</code>
           <template v-if="keyMeta.source"> · sumber: <strong>{{ keyMeta.source }}</strong></template>
           <template v-if="keyMeta.updatedAt"> · diubah: {{ formatDate(keyMeta.updatedAt) }}</template>
+          <template v-if="keyMeta.ageDays !== null"> · umur: <strong>{{ keyMeta.ageDays }} hari</strong></template>
+          <template v-if="keyMeta.expiresAt"> · kadaluarsa: {{ formatDate(keyMeta.expiresAt) }}</template>
+        </p>
+        <p v-if="keyMeta.warning" class="rf-help" :style="{ color: keyMeta.expired ? '#b91c1c' : '#92400e' }">
+          ⚠️ {{ keyMeta.warning }}
         </p>
         <p class="rf-help" v-else>
           Belum ada API key. Generate otomatis atau masukkan manual (minimal 32 karakter).
@@ -136,6 +141,9 @@
           <div class="rf-actions">
             <button class="rf-btn rf-btn-primary" @click="generateKey" :disabled="keyBusy">
               {{ keyBusy ? 'Memproses…' : (keyMeta.enabled ? 'Generate ulang' : 'Generate key') }}
+            </button>
+            <button class="rf-btn rf-btn-ghost" @click="rotateKey" :disabled="keyBusy || !keyMeta.enabled">
+              {{ keyBusy ? 'Memproses…' : 'Rotate key' }}
             </button>
             <button class="rf-btn rf-btn-ghost" @click="showManual = !showManual" :disabled="keyBusy">
               {{ showManual ? 'Tutup input manual' : 'Set manual' }}
@@ -179,7 +187,19 @@ const disablePass = ref('')
 const disableError = ref('')
 
 // ─── Provisioning API key state ───
-const keyMeta = ref({ enabled: false, source: 'none', masked: '', updatedAt: null })
+const keyMeta = ref({
+  enabled: false,
+  source: 'none',
+  masked: '',
+  updatedAt: null,
+  ageDays: null,
+  maxAgeDays: null,
+  warnAgeDays: null,
+  expiresAt: null,
+  rotateRecommended: false,
+  expired: false,
+  warning: '',
+})
 const keyBusy = ref(false)
 const keyError = ref('')
 const showManual = ref(false)
@@ -209,6 +229,22 @@ async function generateKey() {
     await loadKeyMeta()
   } catch (e) {
     keyError.value = e.response?.data?.message || 'Gagal generate API key.'
+  } finally {
+    keyBusy.value = false
+  }
+}
+
+async function rotateKey() {
+  keyBusy.value = true
+  keyError.value = ''
+  try {
+    const res = await auth.rotateProvisioningKey()
+    newKey.value = res.apiKey
+    newKeyWarning.value = res.warning || 'Key berhasil di-rotate. Simpan key baru sekarang.'
+    showManual.value = false
+    await loadKeyMeta()
+  } catch (e) {
+    keyError.value = e.response?.data?.message || 'Gagal rotate API key.'
   } finally {
     keyBusy.value = false
   }

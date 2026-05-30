@@ -132,7 +132,7 @@ export const useAuthStore = defineStore('auth', () => {
   // ───────────────────────────────────────────────────────────────────────
   async function getProvisioningKey() {
     const res = await axios.get('/api/auth/provisioning-key')
-    return res.data // { enabled, source, masked, updatedAt }
+    return res.data // { enabled, source, masked, updatedAt, ageDays, maxAgeDays, expiresAt, rotateRecommended, expired, warning }
   }
 
   async function generateProvisioningKey() {
@@ -140,9 +140,14 @@ export const useAuthStore = defineStore('auth', () => {
     return res.data // { apiKey, mask, warning }
   }
 
+  async function rotateProvisioningKey() {
+    const res = await axios.post('/api/auth/provisioning-key/rotate')
+    return res.data // { apiKey, mask, updatedAt, warning, expiresAt }
+  }
+
   async function setProvisioningKey(apiKey) {
     const res = await axios.put('/api/auth/provisioning-key', { apiKey })
-    return res.data // { ok, mask, updatedAt }
+    return res.data // { ok, mask, updatedAt, expiresAt }
   }
 
   // ───────────────────────────────────────────────────────────────────────
@@ -211,6 +216,6 @@ export const useAuthStore = defineStore('auth', () => {
     // actions
     login, verify2FA, cancelChallenge, logout, restore, installInterceptors,
     setup2FA, enable2FA, disable2FA,
-    getProvisioningKey, generateProvisioningKey, setProvisioningKey,
+    getProvisioningKey, generateProvisioningKey, rotateProvisioningKey, setProvisioningKey,
   }
 })

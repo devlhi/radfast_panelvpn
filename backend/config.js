@@ -75,6 +75,15 @@ module.exports = {
 
   provisioningApiKey: process.env.PROVISIONING_API_KEY || '',
 
+  provisioning: {
+    // Usia maksimal API key (hari). Setelah ini key dianggap kedaluwarsa.
+    keyMaxAgeDays:  parseInt(process.env.PROVISIONING_KEY_MAX_AGE_DAYS, 10)  || 90,
+    // Ambang peringatan rotate (hari). Default H-15 sebelum max age.
+    keyWarnAgeDays: parseInt(process.env.PROVISIONING_KEY_WARN_AGE_DAYS, 10) || 75,
+    // Jika true, request dengan key kedaluwarsa ditolak (403). Default: hanya warning.
+    enforceExpiry:  process.env.PROVISIONING_KEY_ENFORCE_EXPIRY === 'true',
+  },
+
   rateLimit: {
     loginMax:    parseInt(process.env.RATE_LIMIT_LOGIN_MAX, 10) || 5,
     loginWinMs:  (parseInt(process.env.RATE_LIMIT_LOGIN_WINDOW_MIN, 10) || 15) * 60_000,

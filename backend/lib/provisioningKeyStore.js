@@ -45,15 +45,59 @@ function getKey() {
   return config.provisioningApiKey || ''
 }
 
+function parseDate(value) {
+  if (!value) return null
+  const d = new Date(value)
+  return Number.isNaN(d.getTime()) ? null : d
+}
+
+function daysSince(value) {
+  const d = parseDate(value)
+  if (!d) return null
+  return Math.max(0, Math.floor((Date.now() - d.getTime()) / 86_400_000))
+}
+
+function isoAfterDays(value, days) {
+  const d = parseDate(value)
+  if (!d) return null
+  d.setUTCDate(d.getUTCDate() + days)
+  return d.toISOString()
+}
+
 function getMeta() {
   const saved = readSaved()
   const apiKey = saved?.apiKey || config.provisioningApiKey || ''
+  const source = saved?.apiKey ? 'dashboard' : (config.provisioningApiKey ? 'env' : 'none')
+  const updatedAt = saved?.updatedAt || process.env.PROVISIONING_API_KEY_UPDATED_AT || null
+  const ageDays = daysSince(updatedAt)
+  const maxAgeDays = config.provisioning.keyMaxAgeDays
+  const warnAgeDays = config.provisioning.keyWarnAgeDays
+  const expired = ageDays !== null && ageDays >= maxAgeDays
+  const rotateRecommended = ageDays !== null && ageDays >= warnAgeDays
+
   return {
     enabled: Boolean(apiKey),
-    source: saved?.apiKey ? 'dashboard' : (config.provisioningApiKey ? 'env' : 'none'),
+    source,
     masked: mask(apiKey),
-    updatedAt: saved?.updatedAt || null,
+    updatedAt,
+    ageDays,
+    maxAgeDays,
+    warnAgeDays,
+    expiresAt: updatedAt ? isoAfterDays(updatedAt, maxAgeDays) : null,
+    rotateRecommended,
+    expired,
+    enforceExpiry: config.provisioning.enforceExpiry,
+    warning: buildWarning({ source, updatedAt, ageDays, maxAgeDays, warnAgeDays, expired, rotateRecommended }),
   }
+}
+
+function buildWarning(meta) {
+  if (!meta.updatedAt && meta.source === 'env') {
+    return 'API key dari environment belum punya PROVISIONING_API_KEY_UPDATED_AT; usia key tidak bisa dihitung.'
+  }
+  if (meta.expired) return `API key sudah lebih dari ${meta.maxAgeDays} hari. Rotate sekarang.`
+  if (meta.rotateRecommended) return `API key berusia ${meta.ageDays} hari. Disarankan rotate sebelum ${meta.maxAgeDays} hari.`
+  return ''
 }
 
 function setKey(apiKey) {
@@ -68,8 +112,8 @@ function generateKey() {
 
 function rotate() {
   const apiKey = generateKey()
-  writeSaved(apiKey)
-  return apiKey
+  const saved = writeSaved(apiKey)
+  return { apiKey, ...saved }
 }
 
 function mask(apiKey) {

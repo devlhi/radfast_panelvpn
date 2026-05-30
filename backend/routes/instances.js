@@ -1,29 +1,87 @@
 const express = require('express')
 const fs = require('fs')
 const path = require('path')
+const { spawn } = require('child_process')
 const { body, param, validationResult } = require('express-validator')
 
 const audit = require('../lib/audit')
 const { runCmd, runCmdSync, validateIdent, validatePort } = require('../lib/safeShell')
 
 const router = express.Router()
-const REGISTRY = path.join(__dirname, '..', 'data', 'instances.json')
 
+const LEGACY_REGISTRY = path.join(__dirname, '..', 'data', 'instances.json')
 const isWin = process.platform === 'win32'
 
-// ─── Storage helpers ──────────────────────────────────────────────────────
-function readRegistry() {
-  if (!fs.existsSync(REGISTRY)) return []
-  try { return JSON.parse(fs.readFileSync(REGISTRY, 'utf8')) }
+const ACS_INSTANCES_DIR = process.env.ACS_INSTANCES_DIR || '/opt/genieacs-instances'
+const ACS_REPO_DIR = process.env.ACS_REPO_DIR || '/opt/radfast_acs'
+const ACS_REGISTRY = process.env.ACS_REGISTRY || path.join(ACS_INSTANCES_DIR, '.registry')
+const ACS_ADD_INSTANCE_SCRIPT = process.env.ACS_ADD_INSTANCE_SCRIPT || path.join(ACS_REPO_DIR, 'add-instance.sh')
+const ACS_REMOVE_INSTANCE_SCRIPT = process.env.ACS_REMOVE_INSTANCE_SCRIPT || path.join(ACS_REPO_DIR, 'remove-instance.sh')
+
+function readLegacyRegistry() {
+  if (!fs.existsSync(LEGACY_REGISTRY)) return []
+  try { return JSON.parse(fs.readFileSync(LEGACY_REGISTRY, 'utf8')) }
   catch { return [] }
 }
 
-function writeRegistry(data) {
-  fs.mkdirSync(path.dirname(REGISTRY), { recursive: true, mode: 0o750 })
-  // Atomic-ish write: tmp + rename
-  const tmp = REGISTRY + '.tmp'
+function writeLegacyRegistry(data) {
+  fs.mkdirSync(path.dirname(LEGACY_REGISTRY), { recursive: true, mode: 0o750 })
+  const tmp = LEGACY_REGISTRY + '.tmp'
   fs.writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o640 })
-  fs.renameSync(tmp, REGISTRY)
+  fs.renameSync(tmp, LEGACY_REGISTRY)
+}
+
+function readLinuxRegistry() {
+  if (!fs.existsSync(ACS_REGISTRY)) return []
+
+  return fs.readFileSync(ACS_REGISTRY, 'utf8')
+    .split(/\r?\n/)
+    .map(s => s.trim())
+    .filter(Boolean)
+    .map(line => {
+      const parts = line.split(/\s+/)
+      const name = parts[0]
+      const kv = {}
+      for (const part of parts.slice(1)) {
+        const eq = part.indexOf('=')
+        if (eq > 0) kv[part.slice(0, eq)] = part.slice(eq + 1)
+      }
+      return {
+        name,
+        ui_port: num(kv.UI),
+        cwmp_port: num(kv.CWMP),
+        nbi_port: num(kv.NBI),
+        fs_port: num(kv.FS),
+        db: kv.DB || null,
+        ip: kv.IP || null,
+        created: kv.DATE || null,
+        source: 'registry',
+      }
+    })
+    .filter(i => i.name)
+}
+
+function readRegistry() {
+  return isWin ? readLegacyRegistry() : readLinuxRegistry()
+}
+
+function num(value) {
+  const n = Number.parseInt(value, 10)
+  return Number.isFinite(n) ? n : null
+}
+
+function readInstanceEnv(name) {
+  const file = path.join(ACS_INSTANCES_DIR, name, '.env')
+  if (!fs.existsSync(file)) return {}
+
+  const env = {}
+  for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+    const eq = trimmed.indexOf('=')
+    if (eq > 0) env[trimmed.slice(0, eq)] = trimmed.slice(eq + 1)
+  }
+  return env
 }
 
 function isPortListening(port) {
@@ -32,16 +90,23 @@ function isPortListening(port) {
     if (isWin) {
       const out = runCmdSync('netstat', ['-ano'])
       return new RegExp(`[: ]${port}\\b`).test(out)
-    } else {
-      runCmdSync('ss', ['-ltn', `sport = :${port}`])
-      return true
     }
+    runCmdSync('ss', ['-ltn', `sport = :${port}`])
+    return true
   } catch {
     return false
   }
 }
 
-// ─── Validation helpers ───────────────────────────────────────────────────
+function isServiceActive(name, svc = 'ui') {
+  if (isWin) return false
+  try {
+    return runCmdSync('systemctl', ['is-active', `genieacs-${name}-${svc}`]).trim() === 'active'
+  } catch {
+    return false
+  }
+}
+
 function handleValidation(req, res) {
   const errors = validationResult(req)
   if (!errors.isEmpty()) {
@@ -51,90 +116,71 @@ function handleValidation(req, res) {
   return true
 }
 
-// ─── Auto-detect systemd GenieACS instances ──────────────────────────────
-// Scan unit files: genieacs-<name>-ui.service → extract name + port
-function scanSystemdInstances() {
-  if (isWin) return []
-  try {
-    // List all genieacs-*-ui service unit files
-    const out = runCmdSync('systemctl', ['list-unit-files', '--no-legend', '--type=service', 'genieacs-*-ui*'])
-    const detected = []
-    for (const line of out.trim().split('\n')) {
-      // Format: "genieacs-myname-ui.service  enabled"
-      const match = line.match(/^genieacs-([a-z][a-z0-9-]{0,30})-ui\.service/)
-      if (!match) continue
-      const name = match[1]
-      // Get port from ExecStart line in unit file
-      try {
-        const unitOut = runCmdSync('systemctl', ['cat', `genieacs-${name}-ui`])
-        const portMatch = unitOut.match(/--port\s+(\d+)/)
-        const uiPort = portMatch ? parseInt(portMatch[1], 10) : null
-
-        const cwmpOut = runCmdSync('systemctl', ['cat', `genieacs-${name}-cwmp`]).catch?.(() => '') || ''
-        const cwmpMatch = cwmpOut.match?.(/--port\s+(\d+)/)
-        const cwmpPort = cwmpMatch ? parseInt(cwmpMatch[1], 10) : null
-
-        // Get DB from Environment line
-        const dbMatch = unitOut.match(/GENIEACS_MONGODB_CONNECTION_URL=.*\/([a-zA-Z0-9_]+)/)
-        const db = dbMatch ? dbMatch[1] : `genieacs_${name.replace(/-/g, '_')}`
-
-        detected.push({ name, ui_port: uiPort, cwmp_port: cwmpPort, db, source: 'systemd' })
-      } catch { /* skip if can't read unit */ }
-    }
-    return detected
-  } catch {
-    return []
+function toResponse(inst) {
+  const env = isWin ? {} : readInstanceEnv(inst.name)
+  return {
+    name: inst.name,
+    ui_port: inst.ui_port,
+    cwmp_port: inst.cwmp_port,
+    nbi_port: inst.nbi_port || (inst.cwmp_port ? inst.cwmp_port + 10 : null),
+    fs_port: inst.fs_port || (inst.cwmp_port ? inst.cwmp_port + 20 : null),
+    ui_internal: env.RADFAST_UI_INTERNAL ? num(env.RADFAST_UI_INTERNAL) : null,
+    nbi_gate_path: env.RADFAST_NBI_GATE_PATH || null,
+    db: inst.db,
+    ip: inst.ip || null,
+    created: inst.created || null,
+    active: isWin ? (inst.ui_port ? isPortListening(inst.ui_port) : false) : isServiceActive(inst.name, 'ui'),
+    source: inst.source || (isWin ? 'legacy-json' : 'registry'),
   }
 }
 
-// ═════════════════════════════════════════════════════════════════════════
-// GET /api/instances — registry + auto-detect systemd (hybrid) + auto-repair
-// ═════════════════════════════════════════════════════════════════════════
-router.get('/', (req, res) => {
-  let registry = readRegistry()
+function runInteractive(file, args, input = '', timeout = 600_000) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(file, args, { stdio: ['pipe', 'pipe', 'pipe'] })
+    let stdout = ''
+    let stderr = ''
+    let done = false
 
-  // ── Auto-repair: isi port null yang tersimpan ──────────────────────────
-  let repaired = false
-  registry = registry.map(inst => {
-    if (!inst.ui_port || !inst.cwmp_port) {
-      const others = registry.filter(i => i.name !== inst.name)
-      if (!inst.ui_port)   inst.ui_port   = nextAvailablePort(others, 'ui_port',   3000)
-      if (!inst.cwmp_port) inst.cwmp_port = nextAvailablePort(others, 'cwmp_port', 7547)
-      repaired = true
-    }
-    return inst
+    const timer = setTimeout(() => {
+      if (done) return
+      done = true
+      child.kill('SIGKILL')
+      const err = new Error(`Command timeout: ${file} ${args.join(' ')}`)
+      err.stdout = stdout.slice(-2000)
+      err.stderr = stderr.slice(-2000)
+      reject(err)
+    }, timeout)
+
+    child.stdout.on('data', d => { stdout += d.toString() })
+    child.stderr.on('data', d => { stderr += d.toString() })
+    child.on('error', err => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      err.stdout = stdout.slice(-2000)
+      err.stderr = stderr.slice(-2000)
+      reject(err)
+    })
+    child.on('close', code => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      if (code === 0) return resolve({ stdout, stderr })
+      const err = new Error(`Command failed (${code}): ${file} ${args.join(' ')}`)
+      err.stdout = stdout.slice(-2000)
+      err.stderr = stderr.slice(-2000)
+      reject(err)
+    })
+
+    if (input) child.stdin.write(input)
+    child.stdin.end()
   })
-  if (repaired) {
-    try { writeRegistry(registry) } catch {}
-  }
+}
 
-  // ── Auto-detect dari systemd, merge jika belum ada di registry ─────────
-  const systemd = scanSystemdInstances()
-  const merged = [...registry]
-  let changed = false
-  for (const svc of systemd) {
-    if (!merged.find(i => i.name === svc.name)) {
-      merged.push({ ...svc, created: new Date().toISOString() })
-      changed = true
-    }
-  }
-  if (changed) {
-    try { writeRegistry(merged.map(({ source, ...rest }) => rest)) } catch {}
-  }
-
-  const list = merged.map(inst => ({
-    ...inst,
-    active: inst.ui_port ? isPortListening(inst.ui_port) : false,
-  }))
-  res.json(list)
-})
-
-// ─── Auto-assign helpers ──────────────────────────────────────────────────
 function nextAvailablePort(list, field, base) {
-  if (!list.length) return base
-  const used = new Set(list.map(i => i[field]))
+  const used = new Set(list.map(i => i[field]).filter(Boolean))
   let p = base
-  while (used.has(p)) p++
+  while (used.has(p) || isPortListening(p)) p++
   return p
 }
 
@@ -142,25 +188,24 @@ function autoDbName(name) {
   return 'genieacs_' + name.replace(/-/g, '_').replace(/[^a-z0-9_]/gi, '')
 }
 
-// ═════════════════════════════════════════════════════════════════════════
-// GET /api/instances/preview?name=xxx  — preview auto values before create
-// ═════════════════════════════════════════════════════════════════════════
+// GET /api/instances — dashboard list. Linux uses the real .registry only.
+router.get('/', (_req, res) => {
+  res.json(readRegistry().map(toResponse))
+})
+
+// GET /api/instances/preview?name=xxx
 router.get('/preview', (req, res) => {
   const name = String(req.query.name || '').trim()
   const instances = readRegistry()
-  const uiPort   = nextAvailablePort(instances, 'ui_port',   3000)
-  const cwmpPort = nextAvailablePort(instances, 'cwmp_port', 7547)
-  const db       = name ? autoDbName(name) : 'genieacs_...'
-  res.json({ ui_port: uiPort, cwmp_port: cwmpPort, db })
+  const uiPort = nextAvailablePort(instances, 'ui_port', isWin ? 3000 : 3001)
+  const cwmpPort = nextAvailablePort(instances, 'cwmp_port', isWin ? 7547 : 7548)
+  res.json({ ui_port: uiPort, cwmp_port: cwmpPort, db: name ? autoDbName(name) : 'genieacs_...' })
 })
 
-// ═════════════════════════════════════════════════════════════════════════
-// POST /api/instances — create (only name required, rest auto-assigned)
-// ═════════════════════════════════════════════════════════════════════════
+// POST /api/instances — dashboard create. Linux delegates to add-instance.sh.
 router.post(
   '/',
-  body('name').isString().trim().matches(/^[a-z][a-z0-9-]{0,30}$/),
-  // ui_port / cwmp_port / db are optional — auto-assigned if omitted
+  body('name').isString().trim().matches(/^[a-z][a-z0-9_-]{1,62}$/),
   body('ui_port').optional().isInt({ min: 1024, max: 65535 }),
   body('cwmp_port').optional().isInt({ min: 1024, max: 65535 }),
   body('db').optional().isString().trim().matches(/^[a-zA-Z0-9_]{1,64}$/),
@@ -168,76 +213,90 @@ router.post(
     if (!handleValidation(req, res)) return
     try {
       const name = validateIdent(req.body.name, 'instance name')
-
-      const instances = readRegistry()
-      if (instances.find(i => i.name === name)) {
+      if (readRegistry().find(i => i.name === name)) {
         return res.status(409).json({ message: `Instance "${name}" sudah ada.` })
       }
 
-      // Auto-assign if caller didn't send them
-      const uiPort   = req.body.ui_port   ? validatePort(req.body.ui_port)   : nextAvailablePort(instances, 'ui_port',   3000)
-      const cwmpPort = req.body.cwmp_port ? validatePort(req.body.cwmp_port) : nextAvailablePort(instances, 'cwmp_port', 7547)
-      const db       = req.body.db        ? String(req.body.db)              : autoDbName(name)
-
-      if (uiPort === cwmpPort) {
-        return res.status(400).json({ message: 'UI port dan CWMP port tidak boleh sama.' })
+      let inst
+      if (isWin) {
+        const list = readLegacyRegistry()
+        const uiPort = req.body.ui_port ? validatePort(req.body.ui_port) : nextAvailablePort(list, 'ui_port', 3000)
+        const cwmpPort = req.body.cwmp_port ? validatePort(req.body.cwmp_port) : nextAvailablePort(list, 'cwmp_port', 7547)
+        inst = {
+          name,
+          ui_port: uiPort,
+          cwmp_port: cwmpPort,
+          nbi_port: cwmpPort + 10,
+          fs_port: cwmpPort + 20,
+          db: req.body.db ? String(req.body.db) : autoDbName(name),
+          created: new Date().toISOString(),
+          source: 'legacy-json',
+        }
+        list.push(inst)
+        writeLegacyRegistry(list)
+      } else {
+        if (req.body.ui_port || req.body.cwmp_port || req.body.db) {
+          return res.status(400).json({ message: 'Port/db di Linux dikelola otomatis oleh add-instance.sh.' })
+        }
+        if (!fs.existsSync(ACS_ADD_INSTANCE_SCRIPT)) {
+          return res.status(500).json({ message: `Script add-instance tidak ditemukan: ${ACS_ADD_INSTANCE_SCRIPT}` })
+        }
+        await runInteractive('bash', [ACS_ADD_INSTANCE_SCRIPT, name], 'Y\n')
+        inst = readRegistry().find(i => i.name === name)
       }
-      if (instances.find(i => i.ui_port === uiPort || i.cwmp_port === cwmpPort)) {
-        return res.status(409).json({ message: 'Port sudah digunakan instance lain.' })
+
+      if (!inst) return res.status(500).json({ message: 'Instance dibuat tapi tidak ditemukan di registry.' })
+
+      audit.record('instance.create', { name, source: isWin ? 'legacy-json' : 'radfast_acs' }, req)
+      res.status(201).json({ message: 'Instance berhasil dibuat.', ...toResponse(inst) })
+    } catch (e) {
+      if (!e.status && (e.stderr || e.stdout)) {
+        e.status = 500
+        e.message = `Create instance gagal: ${(e.stderr || e.stdout || '').trim().slice(-500)}`
       }
-
-      instances.push({ name, ui_port: uiPort, cwmp_port: cwmpPort, db, created: new Date().toISOString() })
-      writeRegistry(instances)
-
-      if (!isWin) {
-        try { await createSystemdUnit(name, uiPort, cwmpPort, db) }
-        catch (e) { console.error('systemd:', e.message) }
-      }
-
-      audit.record('instance.create', { name, uiPort, cwmpPort, db }, req)
-      res.status(201).json({ message: 'Instance berhasil dibuat.', name, ui_port: uiPort, cwmp_port: cwmpPort, db })
-    } catch (e) { next(e) }
+      next(e)
+    }
   },
 )
 
-// ═════════════════════════════════════════════════════════════════════════
-// POST /api/instances/:name/start | /stop
-// ═════════════════════════════════════════════════════════════════════════
 function makeAction(action) {
   return async (req, res, next) => {
     if (!handleValidation(req, res)) return
     try {
       const name = validateIdent(req.params.name, 'instance name')
-      const inst = readRegistry().find(i => i.name === name)
-      if (!inst) return res.status(404).json({ message: 'Instance tidak ditemukan.' })
+      if (!readRegistry().find(i => i.name === name)) return res.status(404).json({ message: 'Instance tidak ditemukan.' })
 
       if (isWin) {
         audit.record(`instance.${action}.dev`, { name }, req)
         return res.json({ message: `${action} command (Windows dev mode).` })
       }
 
-      // Start/stop semua 4 services sekaligus
+      const failed = []
       for (const svc of ['cwmp', 'nbi', 'fs', 'ui']) {
-        try { await runCmd('systemctl', [action, `genieacs-${name}-${svc}`]) } catch {}
+        try { await runCmd('systemctl', [action, `genieacs-${name}-${svc}`], { timeout: 60_000 }) }
+        catch (e) { failed.push({ svc, error: (e.stderr || e.message || '').slice(-300) }) }
       }
-      audit.record(`instance.${action}`, { name }, req)
-      res.json({ message: `Instance ${action}ed.` })
+      if (action === 'start') {
+        try { await runCmd('systemctl', ['restart', 'genieacs-multi-proxy'], { timeout: 60_000 }) }
+        catch (e) { failed.push({ svc: 'multi-proxy', error: (e.stderr || e.message || '').slice(-300) }) }
+      }
+
+      audit.record(`instance.${action}`, { name, failed }, req)
+      if (failed.length) return res.status(207).json({ message: `Instance ${action} dieksekusi dengan beberapa kegagalan.`, failed })
+      res.json({ message: `Instance ${action} berhasil.` })
     } catch (e) {
-      const msg = e.code ? `Gagal ${action}: exit ${e.code}` : `Gagal ${action}.`
-      res.status(500).json({ message: msg })
+      next(e)
     }
   }
 }
 
-router.post('/:name/start', param('name').matches(/^[a-z][a-z0-9-]{0,30}$/), makeAction('start'))
-router.post('/:name/stop',  param('name').matches(/^[a-z][a-z0-9-]{0,30}$/), makeAction('stop'))
+router.post('/:name/start', param('name').matches(/^[a-z][a-z0-9_-]{1,62}$/), makeAction('start'))
+router.post('/:name/stop', param('name').matches(/^[a-z][a-z0-9_-]{1,62}$/), makeAction('stop'))
 
-// ═════════════════════════════════════════════════════════════════════════
-// DELETE /api/instances/:name
-// ═════════════════════════════════════════════════════════════════════════
+// DELETE /api/instances/:name. Linux delegates to remove-instance.sh.
 router.delete(
   '/:name',
-  param('name').matches(/^[a-z][a-z0-9-]{0,30}$/),
+  param('name').matches(/^[a-z][a-z0-9_-]{1,62}$/),
   async (req, res, next) => {
     if (!handleValidation(req, res)) return
     try {
@@ -246,72 +305,26 @@ router.delete(
       const idx = list.findIndex(i => i.name === name)
       if (idx === -1) return res.status(404).json({ message: 'Instance tidak ditemukan.' })
 
-      if (!isWin) {
-        for (const svc of ['ui', 'cwmp', 'nbi', 'fs']) {
-          const unit = `genieacs-${name}-${svc}`
-          try { await runCmd('systemctl', ['stop', unit]) } catch {}
-          try { await runCmd('systemctl', ['disable', unit]) } catch {}
-          try { fs.unlinkSync(`/etc/systemd/system/${unit}.service`) } catch {}
+      if (isWin) {
+        list.splice(idx, 1)
+        writeLegacyRegistry(list)
+      } else {
+        if (!fs.existsSync(ACS_REMOVE_INSTANCE_SCRIPT)) {
+          return res.status(500).json({ message: `Script remove-instance tidak ditemukan: ${ACS_REMOVE_INSTANCE_SCRIPT}` })
         }
-        try { await runCmd('systemctl', ['daemon-reload']) } catch {}
+        await runInteractive('bash', [ACS_REMOVE_INSTANCE_SCRIPT, name], `${name}\n`)
       }
 
-      list.splice(idx, 1)
-      writeRegistry(list)
-      audit.record('instance.delete', { name }, req)
+      audit.record('instance.delete', { name, source: isWin ? 'legacy-json' : 'radfast_acs' }, req)
       res.json({ message: 'Instance dihapus.' })
-    } catch (e) { next(e) }
+    } catch (e) {
+      if (!e.status && (e.stderr || e.stdout)) {
+        e.status = 500
+        e.message = `Delete instance gagal: ${(e.stderr || e.stdout || '').trim().slice(-500)}`
+      }
+      next(e)
+    }
   },
 )
-
-// ─── helpers ───────────────────────────────────────────────────────────────
-async function createSystemdUnit(name, uiPort, cwmpPort, db) {
-  validateIdent(name, 'instance name')
-  validatePort(uiPort); validatePort(cwmpPort)
-  if (!/^[a-zA-Z0-9_]+$/.test(db)) throw new Error('invalid db')
-
-  // Tiap instance punya 4 services:
-  // UI=uiPort, CWMP=cwmpPort, NBI=cwmpPort+10, FS=cwmpPort+20
-  const nbiPort = cwmpPort + 10
-  const fsPort  = cwmpPort + 20
-  const genieEnv = `GENIEACS_MONGODB_CONNECTION_URL=mongodb://127.0.0.1:27017/${db}`
-  const genieBin = '/usr/bin'
-
-  const services = [
-    { svc: 'ui',   bin: 'genieacs-ui',   port: uiPort   },
-    { svc: 'cwmp', bin: 'genieacs-cwmp', port: cwmpPort },
-    { svc: 'nbi',  bin: 'genieacs-nbi',  port: nbiPort  },
-    { svc: 'fs',   bin: 'genieacs-fs',   port: fsPort   },
-  ]
-
-  for (const { svc, bin, port } of services) {
-    const unitName = `genieacs-${name}-${svc}`
-    const unit = `[Unit]
-Description=GenieACS ${svc.toUpperCase()} — instance ${name} (port ${port})
-After=network.target mongod.service
-Wants=mongod.service
-
-[Service]
-Type=simple
-User=genieacs
-Environment=${genieEnv}
-ExecStart=${genieBin}/${bin} --port ${port}
-WorkingDirectory=/var/lib/genieacs
-Restart=on-failure
-RestartSec=5
-StandardOutput=append:/var/log/genieacs/${unitName}.log
-StandardError=append:/var/log/genieacs/${unitName}.log
-
-[Install]
-WantedBy=multi-user.target
-`
-    fs.writeFileSync(`/etc/systemd/system/${unitName}.service`, unit, { mode: 0o644 })
-  }
-
-  await runCmd('systemctl', ['daemon-reload'])
-  for (const { svc } of services) {
-    await runCmd('systemctl', ['enable', `genieacs-${name}-${svc}`])
-  }
-}
 
 module.exports = router

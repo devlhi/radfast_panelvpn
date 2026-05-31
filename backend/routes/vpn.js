@@ -87,6 +87,91 @@ function cidr24Prefix(subnet) {
   return m ? m[1] + '.' : null
 }
 
+/**
+ * Validasi CIDR IPv4 umum dengan prefix /8–/32 (mis. 192.168.100.0/24, 10.5.4.2/32).
+ * Dipakai untuk "IP block ONT" di belakang router pelanggan.
+ * Mengembalikan CIDR yang sudah ter-normalisasi (network address) atau null bila invalid.
+ */
+function normalizeOntCidr(input) {
+  const m = String(input || '').trim().match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/)
+  if (!m) return null
+  const octets = m.slice(1, 5).map(Number)
+  const prefix = Number(m[5])
+  if (octets.some((o) => o < 0 || o > 255)) return null
+  if (prefix < 8 || prefix > 32) return null
+  // Hitung network address agar konsisten (mis. 192.168.100.5/24 → 192.168.100.0/24)
+  const ipInt = ((octets[0] << 24) | (octets[1] << 16) | (octets[2] << 8) | octets[3]) >>> 0
+  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0
+  const net = (ipInt & mask) >>> 0
+  const netOctets = [(net >>> 24) & 255, (net >>> 16) & 255, (net >>> 8) & 255, net & 255]
+  return `${netOctets.join('.')}/${prefix}`
+}
+
+/** Validasi satu IP manajemen ONT (host /32). */
+function isValidOntHostIp(ip) {
+  return isValidIPv4(ip)
+}
+
+/**
+ * Tentukan IP statis VPN untuk user L2TP secara deterministik dari range pool.
+ * Static IP diperlukan agar static-route ke subnet ONT selalu mengarah ke
+ * tunnel yang benar (tidak berubah-ubah tiap reconnect).
+ * Mengembalikan IP string, atau null bila pool penuh.
+ */
+function assignL2tpStaticIp(users, cfg) {
+  const pool = { ...l2tpPoolDefaults(), ...(cfg || {}) }
+  const prefix = cidr24Prefix(pool.subnet) || '192.168.42.'
+  const start = Number(String(pool.range_start || '').split('.')[3]) || 10
+  const end   = Number(String(pool.range_end   || '').split('.')[3]) || 100
+  const used = new Set(
+    (users || [])
+      .map((u) => Number(String(u.vpn_ip || '').split('.')[3]))
+      .filter((n) => Number.isInteger(n)),
+  )
+  for (let o = start; o <= end; o++) {
+    if (!used.has(o)) return `${prefix}${o}`
+  }
+  return null
+}
+
+/** Map file user→subnet ONT untuk hook ip-up (route otomatis saat connect). */
+const L2TP_ROUTE_MAP = '/etc/radfast/l2tp-routes.map'
+
+/**
+ * Tulis ulang /etc/radfast/l2tp-routes.map dari l2tp-users.json.
+ * Format tiap baris: `username<TAB>lan_subnet`. Dibaca oleh hook ip-up.
+ */
+function syncL2tpRouteMap() {
+  if (!isLinux) return
+  try {
+    const users = readJSON(L2TP_USERS_FILE)
+    const lines = users
+      .filter((u) => u.lan_subnet)
+      .map((u) => `${u.username}\t${u.lan_subnet}`)
+    fs.mkdirSync('/etc/radfast', { recursive: true })
+    fs.writeFileSync(L2TP_ROUTE_MAP, lines.join('\n') + (lines.length ? '\n' : ''), { mode: 0o644 })
+  } catch (e) { console.error('l2tp route map:', e.message) }
+}
+
+/**
+ * Pasang static route ke subnet ONT lewat IP statis VPN user (jika tunnel up).
+ * Memakai `ip route replace` (idempoten). Argumen sudah tervalidasi.
+ */
+function applyL2tpOntRoute(username, lanSubnet) {
+  if (!isLinux || !lanSubnet) return
+  const users = readJSON(L2TP_USERS_FILE)
+  const u = users.find((x) => x.username === username)
+  if (!u || !u.vpn_ip || !isValidIPv4(u.vpn_ip)) return
+  // Route via IP statis client (gateway = vpn_ip). Akan aktif begitu user connect.
+  try { runCmdSync('ip', ['route', 'replace', lanSubnet, 'via', u.vpn_ip]) } catch {}
+}
+
+/** Hapus static route ke subnet ONT (saat user dihapus / subnet diubah). */
+function removeL2tpOntRoute(lanSubnet) {
+  if (!isLinux || !lanSubnet) return
+  try { runCmdSync('ip', ['route', 'del', lanSubnet]) } catch {}
+}
+
 /** Default IP pool L2TP. */
 function l2tpPoolDefaults() {
   return {
@@ -427,6 +512,84 @@ router.get(
   },
 )
 
+// ── Core: buat user L2TP (dipakai route session & provisioning API) ──────
+// opts: { username, password, instance, note, ros_version, lan_subnet, ont_ip, source }
+// Mengembalikan { status, body }. Tidak menyentuh req/res agar bisa dipakai S2S.
+function createL2tpUser(opts) {
+  const username = String(opts.username || '')
+  const password = String(opts.password || '')
+  validateUsername(username)
+
+  const users = readJSON(L2TP_USERS_FILE)
+  if (users.find(u => u.username === username)) {
+    return { status: 409, body: { message: `User "${username}" sudah ada.` } }
+  }
+
+  // ── RouterOS version (default 7; ROS6 hanya L2TP) ──────────────────────
+  const rosVersion = String(opts.ros_version || '7') === '6' ? '6' : '7'
+
+  // ── IP block ONT di belakang router + IP manajemen ONT (opsional) ──────
+  let lanSubnet = null
+  if (opts.lan_subnet != null && String(opts.lan_subnet).trim() !== '') {
+    lanSubnet = normalizeOntCidr(opts.lan_subnet)
+    if (!lanSubnet) {
+      return { status: 400, body: { message: 'IP block ONT harus format CIDR, mis. 192.168.100.0/24.' } }
+    }
+  }
+  let ontIp = null
+  if (opts.ont_ip != null && String(opts.ont_ip).trim() !== '') {
+    ontIp = String(opts.ont_ip).trim()
+    if (!isValidOntHostIp(ontIp)) {
+      return { status: 400, body: { message: 'IP manajemen ONT bukan IPv4 valid.' } }
+    }
+  }
+
+  // ── IP statis VPN deterministik (wajib bila ada subnet ONT utk routing) ─
+  const l2tpCfg = fs.existsSync(L2TP_CFG_FILE) ? (readJSON(L2TP_CFG_FILE) || {}) : {}
+  let vpnIp = null
+  if (lanSubnet) {
+    vpnIp = assignL2tpStaticIp(users, l2tpCfg)
+    if (!vpnIp) {
+      return { status: 409, body: { message: 'Pool IP L2TP penuh, tidak bisa assign IP statis untuk routing ONT.' } }
+    }
+  }
+
+  const source = opts.source === 'api' ? 'api' : 'dashboard'
+  users.push({
+    username, password,
+    instance: opts.instance || '',
+    note: safeNote(opts.note),
+    ros_version: rosVersion,
+    lan_subnet: lanSubnet,
+    ont_ip: ontIp,
+    vpn_ip: vpnIp,
+    source,
+    created: new Date().toISOString(),
+  })
+  writeJSON(L2TP_USERS_FILE, users)
+
+  if (isLinux) {
+    try {
+      // chap-secrets: field ke-4 = IP statis client (atau '*' bila tidak dipakai).
+      const staticField = vpnIp || '*'
+      fs.appendFileSync(
+        '/etc/ppp/chap-secrets',
+        `\n${username} * "${password}" ${staticField}\n`,
+        { mode: 0o600 },
+      )
+    } catch (e) { console.error('chap-secrets:', e.message) }
+    if (lanSubnet) {
+      syncL2tpRouteMap()
+      applyL2tpOntRoute(username, lanSubnet)
+    }
+  }
+
+  return {
+    status: 201,
+    body: { message: `User ${username} ditambahkan.`, vpn_ip: vpnIp, ros_version: rosVersion, lan_subnet: lanSubnet, source },
+  }
+}
+
 router.post(
   '/l2tp/users',
   body('username').isString().matches(/^[a-zA-Z0-9_.-]{1,64}$/),
@@ -435,37 +598,23 @@ router.post(
   body('password').isString().isLength({ min: 8, max: 128 }).matches(/^[\x21\x23-\x5b\x5d-\x7e]+$/),
   body('instance').optional().isString().isLength({ max: 64 }).matches(/^[a-zA-Z0-9_-]*$/),
   body('note').optional().isString().isLength({ max: 200 }),
+  body('ros_version').optional().isIn(['6', '7', 6, 7]),
+  body('lan_subnet').optional({ nullable: true }).isString().isLength({ max: 32 }),
+  body('ont_ip').optional({ nullable: true }).isString().isLength({ max: 18 }),
   (req, res) => {
     if (!handleValidation(req, res)) return
     const { username, password, instance, note } = req.body
-    validateUsername(username)
-
-    const users = readJSON(L2TP_USERS_FILE)
-    if (users.find(u => u.username === username)) {
-      return res.status(409).json({ message: `User "${username}" sudah ada.` })
-    }
-
-    users.push({
-      username, password,
-      instance: instance || '',
-      note: safeNote(note),
-      created: new Date().toISOString(),
+    const result = createL2tpUser({
+      username, password, instance, note,
+      ros_version: req.body.ros_version,
+      lan_subnet: req.body.lan_subnet,
+      ont_ip: req.body.ont_ip,
+      source: 'dashboard',
     })
-    writeJSON(L2TP_USERS_FILE, users)
-
-    if (isLinux) {
-      try {
-        // Append a single line; values already validated as printable ASCII.
-        fs.appendFileSync(
-          '/etc/ppp/chap-secrets',
-          `\n${username} * "${password}" *\n`,
-          { mode: 0o600 },
-        )
-      } catch (e) { console.error('chap-secrets:', e.message) }
+    if (result.status === 201) {
+      audit.record('vpn.l2tp.user_create', { username, instance: instance || '', ros: result.body.ros_version, lan_subnet: result.body.lan_subnet || '' }, req)
     }
-
-    audit.record('vpn.l2tp.user_create', { username, instance: instance || '' }, req)
-    res.status(201).json({ message: `User ${username} ditambahkan.` })
+    res.status(result.status).json(result.body)
   },
 )
 
@@ -475,7 +624,9 @@ router.delete(
   (req, res) => {
     if (!handleValidation(req, res)) return
     const name = req.params.name
-    const users = readJSON(L2TP_USERS_FILE).filter(u => u.username !== name)
+    const allUsers = readJSON(L2TP_USERS_FILE)
+    const removed = allUsers.find(u => u.username === name)
+    const users = allUsers.filter(u => u.username !== name)
     writeJSON(L2TP_USERS_FILE, users)
 
     if (isLinux) {
@@ -484,6 +635,9 @@ router.delete(
         const filtered = lines.filter(l => !l.startsWith(name + ' '))
         fs.writeFileSync('/etc/ppp/chap-secrets', filtered.join('\n'), { mode: 0o600 })
       } catch {}
+      // Bersihkan static route ONT + segarkan map
+      if (removed && removed.lan_subnet) removeL2tpOntRoute(removed.lan_subnet)
+      syncL2tpRouteMap()
     }
     audit.record('vpn.l2tp.user_delete', { username: name }, req)
     res.json({ message: 'User dihapus.' })
@@ -559,6 +713,19 @@ except: print(0, 0)
   tc filter add dev "$IFACE" parent ffff: protocol ip prio 1 u32 match ip src 0.0.0.0/0 \\
     police rate "\${RATE_UP}mbit" burst 1mbit drop flowid :1 2>/dev/null
 }
+
+# ── Static route ke subnet ONT di belakang router ────────────────────────
+# Map file: username<TAB>lan_subnet. Route diarahkan ke interface PPP user ini
+# sehingga GenieACS di server bisa ping IP ONT lewat tunnel.
+ROUTE_MAP="${L2TP_ROUTE_MAP}"
+if [ -f "$ROUTE_MAP" ]; then
+  while IFS=$'\\t' read -r MAP_USER MAP_SUBNET; do
+    [ -z "$MAP_USER" ] && continue
+    if [ "$MAP_USER" = "$PEERNAME" ] && [ -n "$MAP_SUBNET" ]; then
+      ip route replace "$MAP_SUBNET" dev "$IFACE" 2>/dev/null
+    fi
+  done < "$ROUTE_MAP"
+fi
 `
   const ipDown = `#!/bin/bash
 # RadFast — cleanup mapping saat PPP disconnect
@@ -584,22 +751,58 @@ router.get(
     const cfg = { ...l2tpPoolDefaults(), ...(fs.existsSync(L2TP_CFG_FILE) ? (readJSON(L2TP_CFG_FILE) || {}) : {}) }
     const serverIP = getServerIP()
     const psk = cfg.psk || 'YOUR_PSK'
+    // Versi ROS: query ?ros=6|7 menimpa nilai tersimpan; default ke data user / 7.
+    const rosVersion = (String(req.query.ros) === '6' || String(req.query.ros) === '7')
+      ? String(req.query.ros)
+      : (String(user.ros_version || '7') === '6' ? '6' : '7')
 
-    audit.record('vpn.l2tp.mikrotik_view', { username: user.username }, req)
+    audit.record('vpn.l2tp.mikrotik_view', { username: user.username, ros: rosVersion }, req)
 
-    const config = `/interface l2tp-client
+    // Route balik di sisi router: arahkan subnet pool VPN + (opsional) info ONT.
+    const lanComment = user.lan_subnet
+      ? `\n# Subnet ONT Anda (${user.lan_subnet}) sudah diarahkan ke server lewat tunnel ini.`
+      : ''
+    const ontComment = user.ont_ip
+      ? `\n# IP manajemen ONT: ${user.ont_ip} (pastikan reachable dari router).`
+      : ''
+
+    // ROS6 vs ROS7: sintaks l2tp-client sama, tapi profil enkripsi & format beda.
+    let config
+    if (rosVersion === '6') {
+      config = `# ── L2TP/IPsec RadFast VPN ─────────────────────────────
+# RouterOS 6.x — paste di terminal MikroTik (Winbox > New Terminal)
+
+/interface l2tp-client \\
+add name="vpn-radfast" connect-to=${serverIP} user="${user.username}" \\
+    password="${user.password}" use-ipsec=yes ipsec-secret="${psk}" \\
+    add-default-route=no disabled=no
+
+/ip route \\
+add dst-address=${cfg.subnet} gateway="vpn-radfast" comment="RadFast ACS VPN"
+${lanComment}${ontComment}
+
+# Verifikasi:
+/interface l2tp-client print
+/ip route print where comment="RadFast ACS VPN"`
+    } else {
+      config = `# ── L2TP/IPsec RadFast VPN ─────────────────────────────
+# RouterOS 7.x — paste di terminal MikroTik (Winbox > New Terminal)
+
+/interface l2tp-client
 add name="vpn-radfast" connect-to=${serverIP} user="${user.username}" password="${user.password}" \\
     use-ipsec=yes ipsec-secret="${psk}" \\
     disabled=no add-default-route=no profile=default-encryption
 
 /ip route
 add dst-address=${cfg.subnet} gateway="vpn-radfast" comment="RadFast ACS VPN"
+${lanComment}${ontComment}
 
 # Verifikasi:
 /interface l2tp-client print
 /ip route print where gateway="vpn-radfast"`
+    }
 
-    res.json({ config, server_ip: serverIP, username: user.username })
+    res.json({ config, server_ip: serverIP, username: user.username, ros_version: rosVersion, lan_subnet: user.lan_subnet || null })
   },
 )
 
@@ -746,91 +949,143 @@ router.get('/wireguard/peers', (req, res) => {
   })))
 })
 
+// ── Core: buat peer WireGuard (dipakai route session & provisioning API) ──
+// opts: { name, instance, note, ros_version, lan_subnet, ont_ip, source }
+// Mengembalikan { status, body }. Tidak menyentuh req/res agar bisa dipakai S2S.
+async function createWgPeer(opts) {
+  const name = validateIdent(opts.name, 'peer name')
+
+  // WireGuard hanya tersedia di RouterOS 7+. ROS6 tidak punya /interface wireguard.
+  if (String(opts.ros_version || '7') === '6') {
+    return { status: 400, body: { message: 'WireGuard tidak didukung di RouterOS 6. Gunakan L2TP untuk ROS6.' } }
+  }
+
+  // ── IP block ONT + IP manajemen ONT (opsional) ─────────────────────────
+  let lanSubnet = null
+  if (opts.lan_subnet != null && String(opts.lan_subnet).trim() !== '') {
+    lanSubnet = normalizeOntCidr(opts.lan_subnet)
+    if (!lanSubnet) {
+      return { status: 400, body: { message: 'IP block ONT harus format CIDR, mis. 192.168.100.0/24.' } }
+    }
+  }
+  let ontIp = null
+  if (opts.ont_ip != null && String(opts.ont_ip).trim() !== '') {
+    ontIp = String(opts.ont_ip).trim()
+    if (!isValidOntHostIp(ontIp)) {
+      return { status: 400, body: { message: 'IP manajemen ONT bukan IPv4 valid.' } }
+    }
+  }
+
+  const cfg = fs.existsSync(WG_CFG_FILE)
+    ? (readJSON(WG_CFG_FILE) || {})
+    : { port: 51820, ...wireguardPoolDefaults() }
+
+  const peers = readJSON(WG_PEERS_FILE)
+  if (peers.find(p => p.name === name)) {
+    return { status: 409, body: { message: 'Nama sudah dipakai.' } }
+  }
+
+  let privKey, pubKey
+  if (isLinux) {
+    try {
+      privKey = (await runCmd('wg', ['genkey'])).stdout.trim()
+      pubKey  = await new Promise((resolve, reject) => {
+        const { spawn } = require('child_process')
+        const p = spawn('wg', ['pubkey'])
+        let o = '', e = ''
+        p.stdout.on('data', d => o += d)
+        p.stderr.on('data', d => e += d)
+        p.on('close', c => c === 0 ? resolve(o.trim()) : reject(new Error(e)))
+        p.stdin.end(privKey + '\n')
+      })
+    } catch {
+      return { status: 500, body: { message: 'Gagal generate keys.' } }
+    }
+  } else {
+    privKey = crypto.randomBytes(32).toString('base64')
+    pubKey  = crypto.randomBytes(32).toString('base64')
+  }
+
+  const wgPrefix = cidr24Prefix(cfg.subnet) || '10.8.1.'
+  const usedOctets = new Set(
+    peers
+      .map(p => Number(String(p.peer_ip || '').split('.')[3]))
+      .filter(n => Number.isInteger(n)),
+  )
+  const serverOctet = Number(String(cfg.server_vpn_ip || '').split('.')[3])
+  if (Number.isInteger(serverOctet)) usedOctets.add(serverOctet)
+
+  let octet = Number(cfg.next_ip) || 2
+  if (octet < 2) octet = 2
+  while (octet <= 254 && usedOctets.has(octet)) octet++
+  if (octet > 254) {
+    return { status: 409, body: { message: 'Pool IP WireGuard penuh (max .254).' } }
+  }
+
+  const peerIP = `${wgPrefix}${octet}`
+  cfg.next_ip = octet + 1
+  writeJSON(WG_CFG_FILE, cfg)
+
+  const source = opts.source === 'api' ? 'api' : 'dashboard'
+  const peer = {
+    name, pubkey: pubKey, privkey: privKey,
+    peer_ip: peerIP,
+    instance: opts.instance || '',
+    note: safeNote(opts.note),
+    ros_version: '7',
+    lan_subnet: lanSubnet,
+    ont_ip: ontIp,
+    source,
+    created: new Date().toISOString(),
+  }
+  peers.push(peer)
+  writeJSON(WG_PEERS_FILE, peers)
+
+  if (isLinux) {
+    try {
+      // AllowedIPs = IP peer + (opsional) subnet ONT di belakang router,
+      // sehingga trafik ke ONT melewati tunnel WireGuard ini.
+      const allowed = lanSubnet ? `${peerIP}/32,${lanSubnet}` : `${peerIP}/32`
+      await runCmd('wg', ['set', 'wg0', 'peer', pubKey, 'allowed-ips', allowed])
+      fs.appendFileSync('/etc/wireguard/wg0.conf',
+        `\n[Peer] # ${name}\nPublicKey = ${pubKey}\nAllowedIPs = ${allowed}\n`,
+        { mode: 0o600 })
+      // Static route ke subnet ONT via interface wg0 (idempoten).
+      if (lanSubnet) {
+        try { runCmdSync('ip', ['route', 'replace', lanSubnet, 'dev', 'wg0']) } catch {}
+      }
+    } catch (e) { console.error('wg set:', e.message) }
+  }
+
+  // Strip privkey from response — admin can fetch it via /secret endpoint.
+  return {
+    status: 201,
+    body: { message: `Peer ${name} ditambahkan.`, peer: { ...peer, privkey: undefined } },
+  }
+}
+
 router.post(
   '/wireguard/peers',
   body('name').isString().matches(/^[a-z][a-z0-9-]{0,40}$/),
   body('instance').optional().isString().isLength({ max: 64 }).matches(/^[a-zA-Z0-9_-]*$/),
   body('note').optional().isString().isLength({ max: 200 }),
+  body('lan_subnet').optional({ nullable: true }).isString().isLength({ max: 32 }),
+  body('ont_ip').optional({ nullable: true }).isString().isLength({ max: 18 }),
   async (req, res) => {
     if (!handleValidation(req, res)) return
-    const name = validateIdent(req.body.name, 'peer name')
-    const { instance, note } = req.body
-
-    const cfg = fs.existsSync(WG_CFG_FILE)
-      ? (readJSON(WG_CFG_FILE) || {})
-      : { port: 51820, ...wireguardPoolDefaults() }
-
-    const peers = readJSON(WG_PEERS_FILE)
-    if (peers.find(p => p.name === name)) {
-      return res.status(409).json({ message: 'Nama sudah dipakai.' })
-    }
-
-    let privKey, pubKey
-    if (isLinux) {
-      try {
-        privKey = (await runCmd('wg', ['genkey'])).stdout.trim()
-        pubKey  = await new Promise((resolve, reject) => {
-          const { spawn } = require('child_process')
-          const p = spawn('wg', ['pubkey'])
-          let o = '', e = ''
-          p.stdout.on('data', d => o += d)
-          p.stderr.on('data', d => e += d)
-          p.on('close', c => c === 0 ? resolve(o.trim()) : reject(new Error(e)))
-          p.stdin.end(privKey + '\n')
-        })
-      } catch {
-        return res.status(500).json({ message: 'Gagal generate keys.' })
-      }
-    } else {
-      privKey = crypto.randomBytes(32).toString('base64')
-      pubKey  = crypto.randomBytes(32).toString('base64')
-    }
-
-    const wgPrefix = cidr24Prefix(cfg.subnet) || '10.8.1.'
-    const usedOctets = new Set(
-      peers
-        .map(p => Number(String(p.peer_ip || '').split('.')[3]))
-        .filter(n => Number.isInteger(n)),
-    )
-    const serverOctet = Number(String(cfg.server_vpn_ip || '').split('.')[3])
-    if (Number.isInteger(serverOctet)) usedOctets.add(serverOctet)
-
-    let octet = Number(cfg.next_ip) || 2
-    if (octet < 2) octet = 2
-    while (octet <= 254 && usedOctets.has(octet)) octet++
-    if (octet > 254) {
-      return res.status(409).json({ message: 'Pool IP WireGuard penuh (max .254).' })
-    }
-
-    const peerIP = `${wgPrefix}${octet}`
-    cfg.next_ip = octet + 1
-    writeJSON(WG_CFG_FILE, cfg)
-
-    const peer = {
-      name, pubkey: pubKey, privkey: privKey,
-      peer_ip: peerIP,
-      instance: instance || '',
-      note: safeNote(note),
-      created: new Date().toISOString(),
-    }
-    peers.push(peer)
-    writeJSON(WG_PEERS_FILE, peers)
-
-    if (isLinux) {
-      try {
-        await runCmd('wg', ['set', 'wg0', 'peer', pubKey, 'allowed-ips', `${peerIP}/32`])
-        fs.appendFileSync('/etc/wireguard/wg0.conf',
-          `\n[Peer] # ${name}\nPublicKey = ${pubKey}\nAllowedIPs = ${peerIP}/32\n`,
-          { mode: 0o600 })
-      } catch (e) { console.error('wg set:', e.message) }
-    }
-
-    audit.record('vpn.wg.peer_create', { name, peerIP }, req)
-    // Strip privkey from response — admin can fetch it via /secret endpoint.
-    res.status(201).json({
-      message: `Peer ${name} ditambahkan.`,
-      peer: { ...peer, privkey: undefined },
+    const result = await createWgPeer({
+      name: req.body.name,
+      instance: req.body.instance,
+      note: req.body.note,
+      ros_version: req.body.ros_version,
+      lan_subnet: req.body.lan_subnet,
+      ont_ip: req.body.ont_ip,
+      source: 'dashboard',
     })
+    if (result.status === 201) {
+      audit.record('vpn.wg.peer_create', { name: result.body.peer.name, peerIP: result.body.peer.peer_ip, lan_subnet: result.body.peer.lan_subnet || '' }, req)
+    }
+    res.status(result.status).json(result.body)
   },
 )
 
@@ -848,6 +1103,10 @@ router.delete(
       try { await runCmd('wg', ['set', 'wg0', 'peer', peer.pubkey, 'remove']) } catch {}
       // Hapus tc rules untuk peer ini
       if (peer.peer_ip) removePeerTcLimit(peer.peer_ip)
+      // Hapus static route ke subnet ONT bila ada
+      if (peer.lan_subnet) {
+        try { runCmdSync('ip', ['route', 'del', peer.lan_subnet]) } catch {}
+      }
     }
 
     writeJSON(WG_PEERS_FILE, peers.filter(p => p.name !== name))
@@ -966,6 +1225,10 @@ router.get(
   param('name').isString().matches(/^[a-z][a-z0-9-]{0,40}$/),
   (req, res) => {
     if (!handleValidation(req, res)) return
+    // WireGuard hanya di ROS7. Tolak jika diminta untuk ROS6.
+    if (String(req.query.ros) === '6') {
+      return res.status(400).json({ message: 'WireGuard tidak tersedia di RouterOS 6. Gunakan L2TP untuk ROS6.' })
+    }
     const peer = readJSON(WG_PEERS_FILE).find(p => p.name === req.params.name)
     if (!peer) return res.status(404).json({ message: 'Peer tidak ditemukan.' })
 
@@ -975,6 +1238,16 @@ router.get(
     const port = validatePort(cfg.port || 51820)
 
     audit.record('vpn.wg.mikrotik_view', { name: peer.name }, req)
+
+    // allowed-address di sisi router = subnet VPN + (opsional) subnet ONT,
+    // agar trafik dari/ke ONT diteruskan lewat tunnel.
+    const allowedAddr = peer.lan_subnet ? `${cfg.subnet},${peer.lan_subnet}` : cfg.subnet
+    const lanRoute = peer.lan_subnet
+      ? `\n# Subnet ONT (${peer.lan_subnet}) sudah di-route ke server lewat wg0.`
+      : ''
+    const ontComment = peer.ont_ip
+      ? `\n# IP manajemen ONT: ${peer.ont_ip}`
+      : ''
 
     const config = `# ── WireGuard RadFast VPN ──────────────────────────────
 # RouterOS 7.x — paste di terminal MikroTik
@@ -987,7 +1260,7 @@ add interface="wg-radfast" \\
     public-key="${serverPubkey}" \\
     endpoint-address=${serverIP} \\
     endpoint-port=${port} \\
-    allowed-address=${cfg.subnet} \\
+    allowed-address=${allowedAddr} \\
     persistent-keepalive=25s
 
 /ip address
@@ -995,11 +1268,132 @@ add interface="wg-radfast" address="${peer.peer_ip}/24"
 
 /ip route
 add dst-address=${cfg.subnet} gateway="wg-radfast" comment="RadFast ACS"
+${lanRoute}${ontComment}
 
 # Verifikasi:
 /interface wireguard peers print`
 
-    res.json({ config, server_ip: serverIP, peer_ip: peer.peer_ip })
+    res.json({ config, server_ip: serverIP, peer_ip: peer.peer_ip, ros_version: '7', lan_subnet: peer.lan_subnet || null })
+  },
+)
+
+// ═════════════════════════════════════════════════════════════════════════
+// ONT / VPN STATUS — status tunnel + reachability ONT (untuk tampilan ACS)
+// ═════════════════════════════════════════════════════════════════════════
+
+/** Ping satu host IPv4 (validated). Mengembalikan { alive, rtt_ms|null }. */
+function pingHost(ip) {
+  if (!isLinux || !isValidIPv4(ip)) return { alive: false, rtt_ms: null }
+  try {
+    // -c1 satu paket, -W2 timeout 2s, -n numeric. Arg tervalidasi IPv4.
+    const out = runCmdSync('ping', ['-c', '1', '-W', '2', '-n', ip], { timeout: 4000 })
+    const m = out.match(/time[=<]\s*([\d.]+)\s*ms/i)
+    return { alive: true, rtt_ms: m ? Number(m[1]) : null }
+  } catch {
+    return { alive: false, rtt_ms: null }
+  }
+}
+
+// Bangun objek status ONT/VPN (tunnel + reachability) untuk semua akun.
+// Dipisah jadi fungsi agar bisa dipakai endpoint session (/ont-status) dan
+// endpoint server-to-server provisioning (dipakai dashboard GenieACS via proxy).
+// instanceFilter (opsional): kalau diisi, hanya akun dengan field instance === filter
+// yang dikembalikan. Dipakai agar tiap dashboard GenieACS hanya lihat VPN miliknya.
+function buildOntStatus(instanceFilter) {
+  const result = { l2tp: [], wireguard: [], ts: Date.now() }
+  const filter = (typeof instanceFilter === 'string' && instanceFilter.trim()) ? instanceFilter.trim() : null
+  result.instance = filter || null
+
+  // Pubkey aktif + handshake terbaru WireGuard → indikasi tunnel up.
+  let wgActive = []
+  const wgHandshakes = {}
+  if (isLinux) {
+    try { wgActive = runCmdSync('wg', ['show', 'wg0', 'peers']).trim().split('\n').filter(Boolean) } catch {}
+    try {
+      const out = runCmdSync('wg', ['show', 'wg0', 'latest-handshakes'])
+      for (const line of out.trim().split('\n')) {
+        const [pk, ts] = line.split('\t')
+        if (pk) wgHandshakes[pk] = Number(ts) || 0
+      }
+    } catch {}
+  }
+
+  // Interface PPP aktif → username (dari mapping ip-up).
+  const activePppUsers = new Set()
+  if (isLinux) {
+    try {
+      const dir = '/var/run/radfast-ppp'
+      if (fs.existsSync(dir)) {
+        for (const f of fs.readdirSync(dir)) {
+          if (!f.endsWith('.user')) continue
+          try { activePppUsers.add(fs.readFileSync(path.join(dir, f), 'utf8').trim()) } catch {}
+        }
+      }
+    } catch {}
+  }
+
+  // ── L2TP users ──────────────────────────────────────────────────────────
+  for (const u of readJSON(L2TP_USERS_FILE)) {
+    if (filter && (u.instance || '') !== filter) continue
+    const connected = activePppUsers.has(u.username)
+    const targetIp = u.ont_ip && isValidIPv4(u.ont_ip) ? u.ont_ip : null
+    const ping = (connected && targetIp) ? pingHost(targetIp) : { alive: false, rtt_ms: null }
+    result.l2tp.push({
+      username: u.username,
+      instance: u.instance || '',
+      ros_version: u.ros_version || '7',
+      lan_subnet: u.lan_subnet || null,
+      ont_ip: u.ont_ip || null,
+      vpn_ip: u.vpn_ip || null,
+      tunnel: connected ? 'up' : 'down',
+      ont_reachable: ping.alive,
+      ont_rtt_ms: ping.rtt_ms,
+    })
+  }
+
+  // ── WireGuard peers ──────────────────────────────────────────────────────
+  const HANDSHAKE_FRESH = 180 // detik
+  const nowSec = Math.floor(Date.now() / 1000)
+  for (const p of readJSON(WG_PEERS_FILE)) {
+    if (filter && (p.instance || '') !== filter) continue
+    const hs = wgHandshakes[p.pubkey] || 0
+    const connected = wgActive.includes(p.pubkey) && hs > 0 && (nowSec - hs) < HANDSHAKE_FRESH
+    const targetIp = p.ont_ip && isValidIPv4(p.ont_ip) ? p.ont_ip : null
+    const ping = (connected && targetIp) ? pingHost(targetIp) : { alive: false, rtt_ms: null }
+    result.wireguard.push({
+      name: p.name,
+      instance: p.instance || '',
+      ros_version: '7',
+      peer_ip: p.peer_ip || null,
+      lan_subnet: p.lan_subnet || null,
+      ont_ip: p.ont_ip || null,
+      tunnel: connected ? 'up' : 'down',
+      last_handshake: hs ? new Date(hs * 1000).toISOString() : null,
+      ont_reachable: ping.alive,
+      ont_rtt_ms: ping.rtt_ms,
+    })
+  }
+
+  return result
+}
+
+// GET /api/vpn/ont-status — gabungan status tunnel + ping ONT per akun.
+// Dipakai tampilan "status VPN" di ACS. Ping hanya dijalankan untuk akun yang
+// tunnel-nya up DAN punya IP manajemen ONT.
+router.get('/ont-status', (req, res) => {
+  res.json(buildOntStatus())
+})
+
+// GET /api/vpn/ont-ping/:ip — ping ad-hoc satu IP (validated IPv4).
+router.get(
+  '/ont-ping/:ip',
+  param('ip').isIP(4),
+  (req, res) => {
+    if (!handleValidation(req, res)) return
+    const ip = req.params.ip
+    audit.record('vpn.ont_ping', { ip }, req)
+    const r = pingHost(ip)
+    res.json({ ip, alive: r.alive, rtt_ms: r.rtt_ms })
   },
 )
 
@@ -1059,3 +1453,8 @@ router.get('/traffic', (req, res) => {
 })
 
 module.exports = router
+// Ekspos builder agar endpoint provisioning (server-to-server) bisa pakai ulang.
+module.exports.buildOntStatus = buildOntStatus
+// Ekspos core create agar endpoint provisioning (X-API-Key) bisa pakai ulang.
+module.exports.createL2tpUser = createL2tpUser
+module.exports.createWgPeer = createWgPeer

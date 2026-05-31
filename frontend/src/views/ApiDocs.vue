@@ -32,9 +32,9 @@
         <section id="overview" class="rf-card doc-block">
           <h3>Ringkasan</h3>
           <p class="muted">
-            API ini dipakai sistem billing/portal untuk membuat akun VPN otomatis saat order,
-            dan oleh proxy dashboard GenieACS untuk melihat status tunnel serta mengatur static route.
-            Base URL mengikuti host server ini.
+            API ini dipakai sistem billing/portal untuk membuat instance GenieACS dan akun VPN
+            otomatis saat order, dan oleh proxy dashboard GenieACS untuk melihat status tunnel
+            serta mengatur static route. Base URL mengikuti host server ini.
           </p>
           <table class="kv">
             <tbody>
@@ -67,6 +67,164 @@ Content-Type: application/json</code></pre>
             <div><span class="badge b-401">401</span> Key tidak ada / tidak valid</div>
             <div><span class="badge b-403">403</span> IP tidak ada di whitelist</div>
             <div><span class="badge b-429">429</span> Melebihi rate limit</div>
+          </div>
+        </section>
+
+        <!-- POST /instance -->
+        <section id="inst-create" class="rf-card doc-block">
+          <div class="ep-head">
+            <span class="method m-post">POST</span>
+            <code class="ep-path">/api/provision/instance</code>
+          </div>
+          <p class="muted">
+            Membuat instance GenieACS baru (dipakai sistem billing saat order).
+            Di Linux production, port &amp; database dikelola otomatis oleh
+            <code>add-instance.sh</code> — jangan kirim <code>ui_port</code>/<code>cwmp_port</code>/<code>db</code>.
+          </p>
+
+          <div class="code-head">Body parameter</div>
+          <table class="param">
+            <thead><tr><th>Nama</th><th>Tipe</th><th>Wajib</th><th>Keterangan</th></tr></thead>
+            <tbody>
+              <tr><td><code>name</code></td><td>string</td><td>Ya</td><td>Pola <code>[a-z][a-z0-9_-]{1,62}</code></td></tr>
+              <tr><td><code>ui_port</code></td><td>int</td><td>Opsional*</td><td>1024–65535. *Windows dev saja</td></tr>
+              <tr><td><code>cwmp_port</code></td><td>int</td><td>Opsional*</td><td>1024–65535. *Windows dev saja</td></tr>
+              <tr><td><code>db</code></td><td>string</td><td>Opsional*</td><td>Pola <code>[a-zA-Z0-9_]{1,64}</code>. *Windows dev saja</td></tr>
+            </tbody>
+          </table>
+
+          <div class="code-head">Contoh request</div>
+          <pre class="code"><code>POST /api/provision/instance
+X-API-Key: ringkas-rahasia-anda
+Content-Type: application/json
+
+{
+  "name": "client01"
+}</code></pre>
+
+          <div class="code-head">Contoh response <span class="badge b-201">201</span></div>
+          <pre class="code"><code>{
+  "message": "Instance berhasil dibuat.",
+  "instance": {
+    "name": "client01",
+    "ui_port": 3001,
+    "cwmp_port": 7547,
+    "nbi_port": 7557,
+    "fs_port": 7567,
+    "db": "genieacs_client01",
+    "ip": "10.0.0.5",
+    "created": "2026-05-31",
+    "active": true,
+    "services": {
+      "ui": "genieacs-client01-ui",
+      "cwmp": "genieacs-client01-cwmp",
+      "nbi": "genieacs-client01-nbi",
+      "fs": "genieacs-client01-fs"
+    },
+    "ui_internal": 13001,
+    "nbi_gate_path": "/nbi-xxxxxx",
+    "urls": {
+      "ui": "http://10.0.0.5:3001",
+      "cwmp": "http://10.0.0.5:7547",
+      "nbi": "http://10.0.0.5:3001/nbi-xxxxxx"
+    }
+  }
+}</code></pre>
+
+          <div class="resp-grid">
+            <div><span class="badge b-400">400</span> Validasi gagal / kirim port-db saat Linux</div>
+            <div><span class="badge b-409">409</span> Instance sudah ada</div>
+            <div><span class="badge b-500">500</span> Script provisioning gagal</div>
+          </div>
+        </section>
+
+        <!-- GET /instances -->
+        <section id="inst-list" class="rf-card doc-block">
+          <div class="ep-head">
+            <span class="method m-get">GET</span>
+            <code class="ep-path">/api/provision/instances</code>
+          </div>
+          <p class="muted">Daftar semua instance GenieACS yang terdaftar.</p>
+
+          <div class="code-head">Contoh response <span class="badge b-200">200</span></div>
+          <pre class="code"><code>{
+  "count": 1,
+  "instances": [
+    {
+      "name": "client01",
+      "ui_port": 3001,
+      "cwmp_port": 7547,
+      "nbi_port": 7557,
+      "fs_port": 7567,
+      "db": "genieacs_client01",
+      "ip": "10.0.0.5",
+      "created": "2026-05-31",
+      "active": true,
+      "services": { "ui": "genieacs-client01-ui", "cwmp": "genieacs-client01-cwmp", "nbi": "genieacs-client01-nbi", "fs": "genieacs-client01-fs" }
+    }
+  ]
+}</code></pre>
+        </section>
+
+        <!-- GET /instance/:name -->
+        <section id="inst-detail" class="rf-card doc-block">
+          <div class="ep-head">
+            <span class="method m-get">GET</span>
+            <code class="ep-path">/api/provision/instance/:name</code>
+          </div>
+          <p class="muted">Detail satu instance termasuk <code>ui_internal</code> &amp; <code>nbi_gate_path</code>.</p>
+
+          <div class="code-head">Contoh request</div>
+          <pre class="code"><code>GET /api/provision/instance/client01
+X-API-Key: ringkas-rahasia-anda</code></pre>
+
+          <div class="resp-grid">
+            <div><span class="badge b-200">200</span> Detail instance (format sama seperti item list + ui_internal/nbi_gate_path)</div>
+            <div><span class="badge b-404">404</span> Instance tidak ditemukan</div>
+          </div>
+        </section>
+
+        <!-- DELETE /instance/:name -->
+        <section id="inst-delete" class="rf-card doc-block">
+          <div class="ep-head">
+            <span class="method m-del">DELETE</span>
+            <code class="ep-path">/api/provision/instance/:name</code>
+          </div>
+          <p class="muted">
+            Menghapus instance GenieACS. Di Linux menjalankan <code>remove-instance.sh</code>
+            (hentikan service, hapus data). Aksi destruktif — pastikan instance benar.
+          </p>
+
+          <div class="code-head">Contoh response <span class="badge b-200">200</span></div>
+          <pre class="code"><code>{ "message": "Instance \"client01\" dihapus." }</code></pre>
+
+          <div class="resp-grid">
+            <div><span class="badge b-404">404</span> Instance tidak ditemukan</div>
+            <div><span class="badge b-500">500</span> Script remove gagal</div>
+          </div>
+        </section>
+
+        <!-- POST /instance/:name/start|stop -->
+        <section id="inst-action" class="rf-card doc-block">
+          <div class="ep-head">
+            <span class="method m-post">POST</span>
+            <code class="ep-path">/api/provision/instance/:name/start</code>
+          </div>
+          <div class="ep-head" style="margin-top:6px">
+            <span class="method m-post">POST</span>
+            <code class="ep-path">/api/provision/instance/:name/stop</code>
+          </div>
+          <p class="muted">
+            Start/stop service instance (<code>cwmp</code>, <code>nbi</code>, <code>fs</code>, <code>ui</code>) via systemctl.
+            Saat start, <code>genieacs-multi-proxy</code> ikut di-restart.
+          </p>
+
+          <div class="code-head">Contoh response <span class="badge b-200">200</span></div>
+          <pre class="code"><code>{ "message": "Instance start berhasil." }</code></pre>
+
+          <div class="resp-grid">
+            <div><span class="badge b-207">207</span> Sebagian service gagal (lihat array <code>failed</code>)</div>
+            <div><span class="badge b-404">404</span> Instance tidak ditemukan</div>
           </div>
         </section>
 
@@ -305,6 +463,10 @@ Content-Type: application/json
           <table class="param">
             <thead><tr><th>Tipe</th><th>Aksi</th></tr></thead>
             <tbody>
+              <tr><td><code>provision.instance.create</code></td><td>Buat instance GenieACS</td></tr>
+              <tr><td><code>provision.instance.delete</code></td><td>Hapus instance GenieACS</td></tr>
+              <tr><td><code>provision.instance.start</code></td><td>Start service instance</td></tr>
+              <tr><td><code>provision.instance.stop</code></td><td>Stop service instance</td></tr>
               <tr><td><code>provision.vpn_status</code></td><td>Lihat status VPN</td></tr>
               <tr><td><code>provision.vpn.l2tp_create</code></td><td>Buat akun L2TP via API</td></tr>
               <tr><td><code>provision.vpn.wg_create</code></td><td>Buat peer WireGuard via API</td></tr>
@@ -327,6 +489,11 @@ const baseUrl = computed(() => window.location.origin)
 const sections = [
   { id: 'overview',      label: 'Ringkasan',                method: '' },
   { id: 'auth',          label: 'Autentikasi & Whitelist',  method: '' },
+  { id: 'inst-create',   label: '/instance',                method: 'POST' },
+  { id: 'inst-list',     label: '/instances',               method: 'GET' },
+  { id: 'inst-detail',   label: '/instance/:name',          method: 'GET' },
+  { id: 'inst-delete',   label: '/instance/:name',          method: 'DEL' },
+  { id: 'inst-action',   label: '/instance/:name/start|stop', method: 'POST' },
   { id: 'vpn-status',    label: '/vpn-status',              method: 'GET' },
   { id: 'vpn-l2tp',      label: '/vpn/l2tp',                method: 'POST' },
   { id: 'vpn-wireguard', label: '/vpn/wireguard',           method: 'POST' },
@@ -366,6 +533,7 @@ const sections = [
 .method { font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 6px; color: #fff; }
 .m-get  { background: #16a085; }
 .m-post { background: #2980b9; }
+.m-del  { background: #c0392b; }
 
 /* Tables */
 .kv, .param { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -388,7 +556,8 @@ const sections = [
 .badge { display: inline-block; min-width: 38px; text-align: center; font-size: 11px; font-weight: 700; padding: 2px 6px; border-radius: 6px; margin-right: 6px; color: #fff; }
 .b-200, .b-201 { background: #16a085; }
 .b-400, .b-401, .b-403, .b-404, .b-409, .b-429 { background: #c0392b; }
-.b-503 { background: #d68910; }
+.b-207 { background: #2980b9; }
+.b-503, .b-500 { background: #d68910; }
 
 code { background: var(--bg-base); padding: 1px 5px; border-radius: 5px; font-size: 12.5px; }
 </style>

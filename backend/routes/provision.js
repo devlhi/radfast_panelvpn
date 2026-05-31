@@ -517,4 +517,137 @@ router.post(
   makeAction('stop'),
 )
 
+// ═════════════════════════════════════════════════════════════════════════
+// GET /api/provision/vpn-status — status tunnel + reachability ONT (S2S)
+// Dipakai dashboard GenieACS (logo-proxy) untuk menampilkan status VPN ONT.
+// Auth = X-API-Key (provisioningAuth), bukan session — beda origin/proses.
+// ═════════════════════════════════════════════════════════════════════════
+let _buildOntStatus = null
+try {
+  // Lazy require agar tidak circular & tetap jalan walau vpn.js belum dimuat.
+  _buildOntStatus = require('./vpn').buildOntStatus || null
+} catch (_) { _buildOntStatus = null }
+
+// Core create VPN dari vpn.js (dipakai endpoint provisioning server-to-server).
+let _createL2tpUser = null
+let _createWgPeer = null
+try {
+  const vpnMod = require('./vpn')
+  _createL2tpUser = vpnMod.createL2tpUser || null
+  _createWgPeer = vpnMod.createWgPeer || null
+} catch (_) { _createL2tpUser = null; _createWgPeer = null }
+
+router.get('/vpn-status', (req, res, next) => {
+  try {
+    if (typeof _buildOntStatus !== 'function') {
+      return res.status(503).json({ message: 'VPN status belum tersedia.' })
+    }
+    // Filter per-instance: hanya akun VPN milik instance pemanggil yang dikembalikan.
+    // Nama instance divalidasi dengan pola yang sama seperti registry GenieACS.
+    let instanceFilter = ''
+    const raw = req.query.instance
+    if (typeof raw === 'string' && raw.trim()) {
+      if (!/^[a-zA-Z0-9_-]{1,64}$/.test(raw.trim())) {
+        return res.status(400).json({ message: 'Parameter instance tidak valid.' })
+      }
+      instanceFilter = raw.trim()
+    }
+    const data = _buildOntStatus(instanceFilter)
+    audit.record('provision.vpn_status', {
+      instance: instanceFilter || 'all',
+      l2tp: Array.isArray(data.l2tp) ? data.l2tp.length : 0,
+      wireguard: Array.isArray(data.wireguard) ? data.wireguard.length : 0,
+    }, req)
+    res.json(data)
+  } catch (e) {
+    next(e)
+  }
+})
+
+// ═════════════════════════════════════════════════════════════════════════
+// POST /api/provision/vpn/l2tp — buat akun L2TP via API (server-to-server)
+// Dipakai sistem billing/portal untuk provisioning VPN otomatis saat order.
+// Auth = X-API-Key (provisioningAuth).
+// ═════════════════════════════════════════════════════════════════════════
+router.post(
+  '/vpn/l2tp',
+  body('username').isString().matches(/^[a-zA-Z0-9_.-]{1,64}$/),
+  body('password').isString().isLength({ min: 8, max: 128 }).matches(/^[\x21\x23-\x5b\x5d-\x7e]+$/),
+  body('instance').optional().isString().isLength({ max: 64 }).matches(/^[a-zA-Z0-9_-]*$/),
+  body('note').optional().isString().isLength({ max: 200 }),
+  body('ros_version').optional().isIn(['6', '7', 6, 7]),
+  body('lan_subnet').optional({ nullable: true }).isString().isLength({ max: 32 }),
+  body('ont_ip').optional({ nullable: true }).isString().isLength({ max: 18 }),
+  (req, res, next) => {
+    if (!handleValidation(req, res)) return
+    try {
+      if (typeof _createL2tpUser !== 'function') {
+        return res.status(503).json({ message: 'VPN provisioning belum tersedia.' })
+      }
+      const result = _createL2tpUser({
+        username: req.body.username,
+        password: req.body.password,
+        instance: req.body.instance,
+        note: req.body.note,
+        ros_version: req.body.ros_version,
+        lan_subnet: req.body.lan_subnet,
+        ont_ip: req.body.ont_ip,
+        source: 'api',
+      })
+      if (result.status === 201) {
+        audit.record('provision.vpn.l2tp_create', {
+          username: req.body.username,
+          instance: req.body.instance || '',
+          ros: result.body.ros_version,
+          lan_subnet: result.body.lan_subnet || '',
+        }, req)
+      }
+      res.status(result.status).json(result.body)
+    } catch (e) {
+      next(e)
+    }
+  },
+)
+
+// ═════════════════════════════════════════════════════════════════════════
+// POST /api/provision/vpn/wireguard — buat peer WireGuard via API (S2S)
+// Auth = X-API-Key (provisioningAuth).
+// ═════════════════════════════════════════════════════════════════════════
+router.post(
+  '/vpn/wireguard',
+  body('name').isString().matches(/^[a-z][a-z0-9-]{0,40}$/),
+  body('instance').optional().isString().isLength({ max: 64 }).matches(/^[a-zA-Z0-9_-]*$/),
+  body('note').optional().isString().isLength({ max: 200 }),
+  body('lan_subnet').optional({ nullable: true }).isString().isLength({ max: 32 }),
+  body('ont_ip').optional({ nullable: true }).isString().isLength({ max: 18 }),
+  async (req, res, next) => {
+    if (!handleValidation(req, res)) return
+    try {
+      if (typeof _createWgPeer !== 'function') {
+        return res.status(503).json({ message: 'VPN provisioning belum tersedia.' })
+      }
+      const result = await _createWgPeer({
+        name: req.body.name,
+        instance: req.body.instance,
+        note: req.body.note,
+        ros_version: req.body.ros_version,
+        lan_subnet: req.body.lan_subnet,
+        ont_ip: req.body.ont_ip,
+        source: 'api',
+      })
+      if (result.status === 201) {
+        audit.record('provision.vpn.wg_create', {
+          name: req.body.name,
+          instance: req.body.instance || '',
+          peerIP: result.body.peer ? result.body.peer.peer_ip : '',
+          lan_subnet: result.body.peer ? (result.body.peer.lan_subnet || '') : '',
+        }, req)
+      }
+      res.status(result.status).json(result.body)
+    } catch (e) {
+      next(e)
+    }
+  },
+)
+
 module.exports = router

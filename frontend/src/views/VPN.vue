@@ -175,6 +175,15 @@
                     <span class="dot" :class="user.connected ? 'dot-success' : 'dot-muted'"></span>
                     {{ user.connected ? 'Connected' : 'Idle' }}
                   </span>
+                  <div v-if="user.lan_subnet || user.ont_ip" class="rf-ont-status">
+                    <span v-if="ontStatusFor('l2tp', user.username)?.ont_reachable" class="badge badge-success" title="GenieACS bisa ping ONT">
+                      <span class="dot dot-success"></span>ONT online<template v-if="ontStatusFor('l2tp', user.username)?.ont_rtt_ms != null"> · {{ ontStatusFor('l2tp', user.username).ont_rtt_ms }}ms</template>
+                    </span>
+                    <span v-else class="badge badge-muted" :title="user.ont_ip ? ('Ping ' + user.ont_ip) : 'Subnet: ' + user.lan_subnet">
+                      <span class="dot dot-muted"></span>ONT unreachable
+                    </span>
+                    <div v-if="user.lan_subnet" class="rf-cell-sub" style="margin-top:2px">net {{ user.lan_subnet }}</div>
+                  </div>
                 </td>
                 <td style="text-align:right">
                   <div class="rf-actions">
@@ -320,6 +329,15 @@
                     <span class="dot" :class="peer.connected ? 'dot-success' : 'dot-muted'"></span>
                     {{ peer.connected ? 'Connected' : 'Idle' }}
                   </span>
+                  <div v-if="peer.lan_subnet || peer.ont_ip" class="rf-ont-status">
+                    <span v-if="ontStatusFor('wg', peer.name)?.ont_reachable" class="badge badge-success" title="GenieACS bisa ping ONT">
+                      <span class="dot dot-success"></span>ONT online<template v-if="ontStatusFor('wg', peer.name)?.ont_rtt_ms != null"> · {{ ontStatusFor('wg', peer.name).ont_rtt_ms }}ms</template>
+                    </span>
+                    <span v-else class="badge badge-muted" :title="peer.ont_ip ? ('Ping ' + peer.ont_ip) : 'Subnet: ' + peer.lan_subnet">
+                      <span class="dot dot-muted"></span>ONT unreachable
+                    </span>
+                    <div v-if="peer.lan_subnet" class="rf-cell-sub" style="margin-top:2px">net {{ peer.lan_subnet }}</div>
+                  </div>
                 </td>
                 <td style="text-align:right">
                   <div class="rf-actions">
@@ -448,6 +466,26 @@
               </select>
             </div>
             <div class="rf-form-field">
+              <label>Versi RouterOS</label>
+              <select v-model="addL2tpForm.ros_version">
+                <option value="7">RouterOS 7.x</option>
+                <option value="6">RouterOS 6.x (L2TP saja)</option>
+              </select>
+              <span class="rf-form-hint-inline">Script dial-in disesuaikan dengan versi ROS.</span>
+            </div>
+            <div class="rf-form-row">
+              <div class="rf-form-field">
+                <label>IP Block ONT <span class="rf-form-hint-inline">opsional</span></label>
+                <input v-model="addL2tpForm.lan_subnet" type="text" placeholder="192.168.100.0/24" />
+                <span class="rf-form-hint-inline">Subnet LAN di belakang router; di-route ke GenieACS lewat tunnel.</span>
+              </div>
+              <div class="rf-form-field">
+                <label>IP Manajemen ONT <span class="rf-form-hint-inline">opsional</span></label>
+                <input v-model="addL2tpForm.ont_ip" type="text" placeholder="192.168.100.2" />
+                <span class="rf-form-hint-inline">IP yang akan di-ping untuk cek status.</span>
+              </div>
+            </div>
+            <div class="rf-form-field">
               <label>Catatan <span class="rf-form-hint-inline">opsional</span></label>
               <input v-model="addL2tpForm.note" type="text" placeholder="Lokasi / nama pelanggan" />
             </div>
@@ -535,12 +573,24 @@
                 <option v-for="inst in instanceList" :key="inst.name" :value="inst.name">{{ inst.name }}</option>
               </select>
             </div>
+            <div class="rf-form-row">
+              <div class="rf-form-field">
+                <label>IP Block ONT <span class="rf-form-hint-inline">opsional</span></label>
+                <input v-model="addWgForm.lan_subnet" type="text" placeholder="192.168.100.0/24" />
+                <span class="rf-form-hint-inline">Subnet LAN di belakang router; di-route ke GenieACS lewat tunnel.</span>
+              </div>
+              <div class="rf-form-field">
+                <label>IP Manajemen ONT <span class="rf-form-hint-inline">opsional</span></label>
+                <input v-model="addWgForm.ont_ip" type="text" placeholder="192.168.100.2" />
+                <span class="rf-form-hint-inline">IP yang akan di-ping untuk cek status.</span>
+              </div>
+            </div>
             <div class="rf-form-field">
               <label>Catatan <span class="rf-form-hint-inline">opsional</span></label>
               <input v-model="addWgForm.note" type="text" placeholder="Lokasi / nama ISP" />
             </div>
             <div class="rf-info-box rf-info-box-success">
-              Keys di-generate otomatis · Peer IP: <code>{{ wgNextIpPreview }}</code>
+              Keys di-generate otomatis · Peer IP: <code>{{ wgNextIpPreview }}</code> · WireGuard butuh RouterOS 7+
             </div>
           </div>
           <footer class="rf-modal-foot">
@@ -920,8 +970,17 @@ let trafficTimer      = null
 
 const installL2tpForm = ref({ psk: '' })
 const installWgForm   = ref({ port: 51820 })
-const addL2tpForm     = ref({ username: '', password: '', instance: '', note: '' })
-const addWgForm       = ref({ name: '', instance: '', note: '' })
+const addL2tpForm     = ref({ username: '', password: '', instance: '', note: '', ros_version: '7', lan_subnet: '', ont_ip: '' })
+const addWgForm       = ref({ name: '', instance: '', note: '', lan_subnet: '', ont_ip: '' })
+
+// Status VPN ONT (per akun): { l2tp:[...], wireguard:[...] }
+const ontStatus    = ref({ l2tp: [], wireguard: [] })
+let ontStatusTimer = null
+const ontStatusFor = (type, key) => {
+  const list = type === 'wg' ? ontStatus.value.wireguard : ontStatus.value.l2tp
+  const id = type === 'wg' ? 'name' : 'username'
+  return (list || []).find(x => x[id] === key) || null
+}
 
 const icoShield = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`
 const icoWg     = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4"/></svg>`
@@ -942,7 +1001,7 @@ const wgNextIpPreview = computed(() => {
 
 async function fetchAll() {
   // allSettled: satu request gagal tidak menghalangi yang lain
-  const [healthRes, statusRes, l2tpRes, l2tpCfgRes, wgRes, wgCfgRes, instRes] = await Promise.allSettled([
+  const [healthRes, statusRes, l2tpRes, l2tpCfgRes, wgRes, wgCfgRes, instRes, ontRes] = await Promise.allSettled([
     axios.get('/api/health'),           // no auth — untuk server_ip
     axios.get('/api/vpn/status'),
     axios.get('/api/vpn/l2tp/users'),
@@ -950,6 +1009,7 @@ async function fetchAll() {
     axios.get('/api/vpn/wireguard/peers'),
     axios.get('/api/vpn/wireguard/config'),
     axios.get('/api/instances'),
+    axios.get('/api/vpn/ont-status'),
   ])
   // server_ip dari health (no auth), sisanya dari status
   if (healthRes.status  === 'fulfilled') status.value.server_ip = healthRes.value.data.server_ip
@@ -961,9 +1021,18 @@ async function fetchAll() {
   if (wgRes.status      === 'fulfilled') wgPeers.value      = wgRes.value.data
   if (wgCfgRes.status   === 'fulfilled') wgConfig.value     = wgCfgRes.value.data
   if (instRes.status    === 'fulfilled') instanceList.value  = instRes.value.data
+  if (ontRes.status     === 'fulfilled') ontStatus.value     = ontRes.value.data
 
   loadingL2tp.value = false
   loadingWg.value   = false
+}
+
+// Refresh status VPN ONT saja (untuk polling ringan).
+async function refreshOntStatus() {
+  try {
+    const res = await axios.get('/api/vpn/ont-status')
+    ontStatus.value = res.data
+  } catch { /* abaikan error transient */ }
 }
 
 async function installL2tp() {
@@ -996,7 +1065,7 @@ async function addL2tpUser() {
   try {
     await axios.post('/api/vpn/l2tp/users', addL2tpForm.value)
     openAddL2tp.value = false
-    addL2tpForm.value = { username: '', password: '', instance: '', note: '' }
+    addL2tpForm.value = { username: '', password: '', instance: '', note: '', ros_version: '7', lan_subnet: '', ont_ip: '' }
     await fetchAll()
   } catch (e) { addError.value = e.response?.data?.message || 'Gagal membuat user.' }
   finally { addLoading.value = false }
@@ -1015,7 +1084,7 @@ async function addWgPeer() {
   try {
     await axios.post('/api/vpn/wireguard/peers', addWgForm.value)
     openAddWg.value = false
-    addWgForm.value = { name: '', instance: '', note: '' }
+    addWgForm.value = { name: '', instance: '', note: '', lan_subnet: '', ont_ip: '' }
     await fetchAll()
   } catch (e) { addError.value = e.response?.data?.message || 'Gagal membuat peer.' }
   finally { addLoading.value = false }
@@ -1144,11 +1213,22 @@ function openTrafficModal(type, name) {
   trafficModal.value = { type, name }
 }
 
-async function showMikrotikConfig(type, name) {
+async function showMikrotikConfig(type, name, rosOverride) {
   try {
-    const url = type === 'l2tp' ? `/api/vpn/l2tp/mikrotik/${name}` : `/api/vpn/wireguard/mikrotik/${name}`
+    // Tentukan versi ROS: override (tombol) > nilai tersimpan di akun > 7.
+    let ros = rosOverride
+    if (!ros) {
+      if (type === 'l2tp') {
+        const u = l2tpUsers.value.find(x => x.username === name)
+        ros = u?.ros_version || '7'
+      } else {
+        ros = '7' // WireGuard hanya ROS7
+      }
+    }
+    const base = type === 'l2tp' ? `/api/vpn/l2tp/mikrotik/${name}` : `/api/vpn/wireguard/mikrotik/${name}`
+    const url = `${base}?ros=${ros}`
     const res = await axios.get(url)
-    rosConfig.value = { ...res.data, name }
+    rosConfig.value = { ...res.data, name, type, ros_version: res.data.ros_version || ros }
   } catch (e) { alert(e.response?.data?.message || 'Gagal load config') }
 }
 
@@ -1170,10 +1250,13 @@ onMounted(async () => {
   await fetchAll()
   await fetchTraffic()
   trafficTimer = setInterval(fetchTraffic, 30_000)
+  // Polling status VPN ONT tiap 30s (ringan, hanya status + ping).
+  ontStatusTimer = setInterval(refreshOntStatus, 30_000)
 })
 
 onUnmounted(() => {
   if (trafficTimer) clearInterval(trafficTimer)
+  if (ontStatusTimer) clearInterval(ontStatusTimer)
 })
 </script>
 
@@ -1344,6 +1427,10 @@ onUnmounted(() => {
 .rf-speed-badge { display: flex; flex-direction: column; gap: 2px; }
 .rf-speed-dn { font-size: 11px; font-weight: 600; color: var(--success); font-family: 'JetBrains Mono', monospace; }
 .rf-speed-up { font-size: 11px; font-weight: 600; color: var(--warning); font-family: 'JetBrains Mono', monospace; }
+
+/* ─── ONT VPN status ─── */
+.rf-ont-status { margin-top: 6px; display: flex; flex-direction: column; gap: 2px; align-items: flex-start; }
+.rf-ont-status .badge { font-size: 10px; }
 
 /* ─── Input with unit suffix ─── */
 .rf-input-unit { position: relative; display: flex; }

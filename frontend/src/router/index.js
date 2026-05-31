@@ -12,6 +12,7 @@ const routes = [
       { path: 'dashboard', component: () => import('../views/Dashboard.vue') },
       { path: 'instances', component: () => import('../views/Instances.vue') },
       { path: 'vpn', component: () => import('../views/VPN.vue') },
+      { path: 'api-vpn', component: () => import('../views/ApiVpn.vue') },
       { path: 'monitor', component: () => import('../views/Monitor.vue') },
       { path: 'security', component: () => import('../views/SecurityLog.vue') },
       { path: 'settings', component: () => import('../views/Settings.vue') },

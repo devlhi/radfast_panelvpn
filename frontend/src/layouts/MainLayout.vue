@@ -105,6 +105,7 @@ const ico = {
   activity:  `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>`,
   lock:      `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>`,
   cloud:     `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/><path d="m9 13 2 2 4-4"/></svg>`,
+  book:      `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>`,
 }
 
 const navSections = [
@@ -128,6 +129,7 @@ const navSections = [
       { path: '/monitor',  icon: ico.activity, label: 'Live Monitor' },
       { path: '/security', icon: ico.shield,   label: 'Security Log' },
       { path: '/settings', icon: ico.lock,     label: 'Security' },
+      { path: '/api-docs', icon: ico.book,     label: 'Dokumentasi API' },
     ],
   },
 ]
@@ -140,6 +142,7 @@ const pageMeta = {
   '/monitor':   'System Monitor',
   '/security':  'Security Log',
   '/settings':  'Security Settings',
+  '/api-docs':  'Dokumentasi API',
 }
 
 const currentPageTitle = computed(() => pageMeta[route.path] || 'RadFast Admin')

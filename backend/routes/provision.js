@@ -528,14 +528,18 @@ try {
   _buildOntStatus = require('./vpn').buildOntStatus || null
 } catch (_) { _buildOntStatus = null }
 
-// Core create VPN dari vpn.js (dipakai endpoint provisioning server-to-server).
+// Core create/update VPN dari vpn.js (dipakai endpoint provisioning server-to-server).
 let _createL2tpUser = null
 let _createWgPeer = null
+let _updateL2tpRoute = null
+let _updateWgPeerRoute = null
 try {
   const vpnMod = require('./vpn')
   _createL2tpUser = vpnMod.createL2tpUser || null
   _createWgPeer = vpnMod.createWgPeer || null
-} catch (_) { _createL2tpUser = null; _createWgPeer = null }
+  _updateL2tpRoute = vpnMod.updateL2tpRoute || null
+  _updateWgPeerRoute = vpnMod.updateWgPeerRoute || null
+} catch (_) { _createL2tpUser = null; _createWgPeer = null; _updateL2tpRoute = null; _updateWgPeerRoute = null }
 
 router.get('/vpn-status', (req, res, next) => {
   try {
@@ -563,6 +567,54 @@ router.get('/vpn-status', (req, res, next) => {
     next(e)
   }
 })
+
+// ═════════════════════════════════════════════════════════════════════════
+// POST /api/provision/vpn/route — update static route akun VPN existing.
+// Dipakai proxy GenieACS agar tenant hanya bisa set route, bukan create akun.
+// ═════════════════════════════════════════════════════════════════════════
+router.post(
+  '/vpn/route',
+  body('type').isString().isIn(['l2tp', 'wireguard']),
+  body('name').isString().isLength({ min: 1, max: 64 }),
+  body('instance').optional().isString().isLength({ max: 64 }).matches(/^[a-zA-Z0-9_-]*$/),
+  body('lan_subnet').optional({ nullable: true }).isString().isLength({ max: 32 }),
+  body('ont_ip').optional({ nullable: true }).isString().isLength({ max: 18 }),
+  (req, res, next) => {
+    if (!handleValidation(req, res)) return
+    try {
+      if (typeof _updateL2tpRoute !== 'function' || typeof _updateWgPeerRoute !== 'function') {
+        return res.status(503).json({ message: 'Update static route VPN belum tersedia.' })
+      }
+      const type = String(req.body.type || '').trim().toLowerCase()
+      const payload = {
+        instance: req.body.instance,
+        lan_subnet: req.body.lan_subnet,
+        ont_ip: req.body.ont_ip,
+      }
+
+      let result
+      if (type === 'wireguard') {
+        payload.name = req.body.name
+        result = _updateWgPeerRoute(payload)
+      } else {
+        payload.username = req.body.name
+        result = _updateL2tpRoute(payload)
+      }
+
+      if (result.status === 200) {
+        audit.record('provision.vpn.route_update', {
+          type,
+          name: req.body.name,
+          instance: req.body.instance || '',
+          lan_subnet: result.body.lan_subnet || '',
+        }, req)
+      }
+      res.status(result.status).json(result.body)
+    } catch (e) {
+      next(e)
+    }
+  },
+)
 
 // ═════════════════════════════════════════════════════════════════════════
 // POST /api/provision/vpn/l2tp — buat akun L2TP via API (server-to-server)

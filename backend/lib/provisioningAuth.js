@@ -12,6 +12,7 @@
 const crypto = require('crypto')
 const audit = require('./audit')
 const keyStore = require('./provisioningKeyStore')
+const ipStore = require('./provisioningIpStore')
 
 // Track last warning/expiration audit event per key-age bucket
 // to avoid filling logs with the same warning on every single request.
@@ -40,9 +41,17 @@ function emitAudit(type, req) {
 
 module.exports = function provisioningAuth(req, res, next) {
   const apiKey = req.headers['x-api-key']
+  const clientIp = ipStore.normalizeIp(req.ip)
+
+  // IP allowlist dicek dulu: kalau allowlist aktif, request dari IP lain ditolak
+  // bahkan sebelum validasi API key supaya key tidak bisa dicoba dari sembarang IP.
+  if (!ipStore.isAllowed(clientIp)) {
+    audit.record('provision.ip_blocked', { path: req.originalUrl, ip: clientIp }, req)
+    return res.status(403).json({ message: 'IP tidak diizinkan mengakses Provisioning API.' })
+  }
 
   if (!apiKey) {
-    audit.record('provision.auth_missing', { path: req.originalUrl }, req)
+    audit.record('provision.auth_missing', { path: req.originalUrl, ip: clientIp }, req)
     return res.status(401).json({ message: 'X-API-Key header tidak ditemukan.' })
   }
 

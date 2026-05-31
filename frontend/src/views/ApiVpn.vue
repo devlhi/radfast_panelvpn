@@ -11,6 +11,31 @@
       </button>
     </section>
 
+    <section class="rf-card allow-card">
+      <div class="allow-head">
+        <div>
+          <h3>Whitelist IP Provisioning API</h3>
+          <p class="muted">Isi satu IP/CIDR per baris (contoh: <code>192.168.35.253</code> atau <code>10.10.0.0/24</code>). Kosong = nonaktif (semua IP diizinkan).</p>
+        </div>
+        <button class="btn-secondary" :disabled="savingAllow || loadingAllow" @click="saveAllowlist">
+          {{ savingAllow ? 'Menyimpan…' : 'Simpan Whitelist' }}
+        </button>
+      </div>
+      <textarea
+        v-model="allowText"
+        class="allow-text"
+        rows="4"
+        placeholder="192.168.35.253&#10;10.10.0.0/24"
+      />
+      <div class="allow-meta">
+        <span>Status: <strong>{{ allowEnabled ? 'Aktif' : 'Nonaktif' }}</strong></span>
+        <span>Total: <strong>{{ allowCount }}</strong> entri</span>
+        <span v-if="allowUpdatedAt">Update: <strong>{{ formatDate(allowUpdatedAt) }}</strong></span>
+      </div>
+      <div v-if="allowMsg" class="allow-ok">{{ allowMsg }}</div>
+      <div v-if="allowError" class="alert-error" style="margin:10px 0 0">{{ allowError }}</div>
+    </section>
+
     <section class="summary-grid">
       <article class="summary-card rf-card">
         <span class="summary-label">Total API VPN</span>
@@ -103,6 +128,15 @@ const typeFilter = ref('all')
 const instanceFilter = ref('all')
 const query = ref('')
 
+const loadingAllow = ref(false)
+const savingAllow = ref(false)
+const allowText = ref('')
+const allowEnabled = ref(false)
+const allowCount = ref(0)
+const allowUpdatedAt = ref('')
+const allowMsg = ref('')
+const allowError = ref('')
+
 const apiL2tp = computed(() => l2tpUsers.value.filter(u => u.source === 'api'))
 const apiWg = computed(() => wgPeers.value.filter(p => p.source === 'api'))
 
@@ -168,6 +202,48 @@ async function fetchAll() {
   }
 }
 
+async function fetchAllowlist() {
+  loadingAllow.value = true
+  allowError.value = ''
+  try {
+    const res = await axios.get('/api/auth/provisioning-ip-allowlist')
+    const data = res.data || {}
+    const allow = Array.isArray(data.allow) ? data.allow : []
+    allowText.value = allow.join('\n')
+    allowEnabled.value = Boolean(data.enabled)
+    allowCount.value = Number(data.count || allow.length || 0)
+    allowUpdatedAt.value = data.updatedAt || ''
+  } catch (e) {
+    allowError.value = e?.response?.data?.message || e.message || 'Gagal memuat whitelist IP.'
+  } finally {
+    loadingAllow.value = false
+  }
+}
+
+async function saveAllowlist() {
+  savingAllow.value = true
+  allowError.value = ''
+  allowMsg.value = ''
+  try {
+    const allow = String(allowText.value || '')
+      .split(/\r?\n/)
+      .map(x => x.trim())
+      .filter(Boolean)
+    const res = await axios.put('/api/auth/provisioning-ip-allowlist', { allow })
+    const data = res.data || {}
+    const resultAllow = Array.isArray(data.allow) ? data.allow : allow
+    allowText.value = resultAllow.join('\n')
+    allowEnabled.value = Boolean(data.enabled)
+    allowCount.value = Number(data.count || resultAllow.length || 0)
+    allowUpdatedAt.value = data.updatedAt || allowUpdatedAt.value
+    allowMsg.value = 'Whitelist IP berhasil disimpan.'
+  } catch (e) {
+    allowError.value = e?.response?.data?.message || e.message || 'Gagal menyimpan whitelist IP.'
+  } finally {
+    savingAllow.value = false
+  }
+}
+
 function formatDate(value) {
   if (!value) return '—'
   const d = new Date(value)
@@ -175,7 +251,9 @@ function formatDate(value) {
   return d.toLocaleString('id-ID', { dateStyle: 'medium', timeStyle: 'short' })
 }
 
-onMounted(fetchAll)
+onMounted(async () => {
+  await Promise.all([fetchAll(), fetchAllowlist()])
+})
 </script>
 
 <style scoped>
@@ -188,6 +266,12 @@ h2 { margin: 0 0 6px; font-size: 22px; }
 .summary-card { padding: 16px; display: grid; gap: 6px; }
 .summary-label { color: var(--text-muted); font-size: 13px; }
 .summary-card strong { font-size: 24px; }
+.allow-card { padding: 16px; display: grid; gap: 10px; }
+.allow-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.allow-head h3 { margin: 0 0 6px; font-size: 16px; }
+.allow-text { width: 100%; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-base); color: var(--text); padding: 10px 12px; outline: none; resize: vertical; min-height: 100px; }
+.allow-meta { display: flex; gap: 14px; flex-wrap: wrap; color: var(--text-muted); font-size: 12px; }
+.allow-ok { color: var(--success); font-size: 13px; }
 .toolbar { padding: 14px; display: grid; grid-template-columns: 160px 220px 1fr; gap: 12px; align-items: end; }
 label { display: grid; gap: 6px; color: var(--text-muted); font-size: 12px; }
 select, input { width: 100%; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-base); color: var(--text); padding: 10px 12px; outline: none; }
@@ -203,6 +287,6 @@ code { font-size: 12px; }
 .badge.wireguard { background: var(--success-soft); color: var(--success); }
 .empty-state { padding: 30px; text-align: center; color: var(--text-muted); }
 .alert-error { margin: 14px; padding: 12px 14px; border-radius: 12px; background: var(--danger-soft); color: var(--danger); }
-@media (max-width: 980px) { .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .toolbar { grid-template-columns: 1fr; } }
+@media (max-width: 980px) { .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .toolbar { grid-template-columns: 1fr; } .allow-head { flex-direction: column; } }
 @media (max-width: 640px) { .header-card { align-items: flex-start; flex-direction: column; } .summary-grid { grid-template-columns: 1fr; } }
 </style>

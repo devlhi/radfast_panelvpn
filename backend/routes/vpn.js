@@ -1452,9 +1452,145 @@ router.get('/traffic', (req, res) => {
   res.json({ wg, l2tp, ts })
 })
 
+// ═════════════════════════════════════════════════════════════════════════
+// Core: update static route (lan_subnet + ip klien) untuk akun yang sudah ada.
+// Dipakai endpoint provisioning (X-API-Key) agar dashboard GenieACS hanya
+// bisa MENGATUR static route, bukan membuat/menghapus akun VPN.
+// instanceFilter (opsional): kalau diisi, akun wajib milik instance tsb.
+// opts: { username|name, instance, lan_subnet, ont_ip }
+// ═════════════════════════════════════════════════════════════════════════
+function updateL2tpRoute(opts) {
+  const username = String(opts.username || opts.name || '')
+  if (!/^[a-zA-Z0-9_.-]{1,64}$/.test(username)) {
+    return { status: 400, body: { message: 'Username tidak valid.' } }
+  }
+  const filter = (typeof opts.instance === 'string' && opts.instance.trim()) ? opts.instance.trim() : null
+
+  const users = readJSON(L2TP_USERS_FILE)
+  const u = users.find((x) => x.username === username)
+  if (!u) return { status: 404, body: { message: 'Akun tidak ditemukan.' } }
+  if (filter && (u.instance || '') !== filter) {
+    return { status: 404, body: { message: 'Akun tidak ditemukan.' } }
+  }
+
+  // Parse subnet baru (boleh dikosongkan untuk menghapus route).
+  let lanSubnet = null
+  if (opts.lan_subnet != null && String(opts.lan_subnet).trim() !== '') {
+    lanSubnet = normalizeOntCidr(opts.lan_subnet)
+    if (!lanSubnet) {
+      return { status: 400, body: { message: 'Static route harus format CIDR, mis. 192.168.100.0/24.' } }
+    }
+  }
+  let ontIp = null
+  if (opts.ont_ip != null && String(opts.ont_ip).trim() !== '') {
+    ontIp = String(opts.ont_ip).trim()
+    if (!isValidOntHostIp(ontIp)) {
+      return { status: 400, body: { message: 'IP klien bukan IPv4 valid.' } }
+    }
+  }
+
+  const oldSubnet = u.lan_subnet || null
+
+  // Jika butuh routing tapi user belum punya IP statis VPN → assign sekarang.
+  if (lanSubnet && !u.vpn_ip) {
+    const l2tpCfg = fs.existsSync(L2TP_CFG_FILE) ? (readJSON(L2TP_CFG_FILE) || {}) : {}
+    const vpnIp = assignL2tpStaticIp(users, l2tpCfg)
+    if (!vpnIp) {
+      return { status: 409, body: { message: 'Pool IP L2TP penuh, tidak bisa assign IP statis untuk routing.' } }
+    }
+    u.vpn_ip = vpnIp
+    if (isLinux) {
+      // Perbarui field IP statis di chap-secrets (kolom ke-4).
+      try {
+        const file = '/etc/ppp/chap-secrets'
+        if (fs.existsSync(file)) {
+          const lines = fs.readFileSync(file, 'utf8').split('\n').map((ln) => {
+            const parts = ln.trim().split(/\s+/)
+            if (parts[0] === username) return `${username} * "${u.password}" ${vpnIp}`
+            return ln
+          })
+          fs.writeFileSync(file, lines.join('\n'), { mode: 0o600 })
+        }
+      } catch (e) { console.error('chap-secrets update:', e.message) }
+    }
+  }
+
+  u.lan_subnet = lanSubnet
+  u.ont_ip = ontIp
+  writeJSON(L2TP_USERS_FILE, users)
+
+  if (isLinux) {
+    syncL2tpRouteMap()
+    if (oldSubnet && oldSubnet !== lanSubnet) removeL2tpOntRoute(oldSubnet)
+    if (lanSubnet) applyL2tpOntRoute(username, lanSubnet)
+  }
+
+  return {
+    status: 200,
+    body: { message: 'Static route diperbarui.', username, lan_subnet: lanSubnet, ont_ip: ontIp, vpn_ip: u.vpn_ip || null },
+  }
+}
+
+function updateWgPeerRoute(opts) {
+  const name = String(opts.name || opts.username || '')
+  if (!/^[a-z][a-z0-9-]{0,40}$/.test(name)) {
+    return { status: 400, body: { message: 'Nama peer tidak valid.' } }
+  }
+  const filter = (typeof opts.instance === 'string' && opts.instance.trim()) ? opts.instance.trim() : null
+
+  const peers = readJSON(WG_PEERS_FILE)
+  const p = peers.find((x) => x.name === name)
+  if (!p) return { status: 404, body: { message: 'Akun tidak ditemukan.' } }
+  if (filter && (p.instance || '') !== filter) {
+    return { status: 404, body: { message: 'Akun tidak ditemukan.' } }
+  }
+
+  let lanSubnet = null
+  if (opts.lan_subnet != null && String(opts.lan_subnet).trim() !== '') {
+    lanSubnet = normalizeOntCidr(opts.lan_subnet)
+    if (!lanSubnet) {
+      return { status: 400, body: { message: 'Static route harus format CIDR, mis. 192.168.100.0/24.' } }
+    }
+  }
+  let ontIp = null
+  if (opts.ont_ip != null && String(opts.ont_ip).trim() !== '') {
+    ontIp = String(opts.ont_ip).trim()
+    if (!isValidOntHostIp(ontIp)) {
+      return { status: 400, body: { message: 'IP klien bukan IPv4 valid.' } }
+    }
+  }
+
+  const oldSubnet = p.lan_subnet || null
+  p.lan_subnet = lanSubnet
+  p.ont_ip = ontIp
+  writeJSON(WG_PEERS_FILE, peers)
+
+  if (isLinux) {
+    // Perbarui AllowedIPs peer di wg0 (peer IP + subnet ONT bila ada).
+    try {
+      const allowed = lanSubnet ? `${p.peer_ip}/32,${lanSubnet}` : `${p.peer_ip}/32`
+      runCmdSync('wg', ['set', 'wg0', 'peer', p.pubkey, 'allowed-ips', allowed])
+    } catch (e) { console.error('wg set allowed-ips:', e.message) }
+    if (oldSubnet && oldSubnet !== lanSubnet) {
+      try { runCmdSync('ip', ['route', 'del', oldSubnet]) } catch {}
+    }
+    if (lanSubnet) {
+      try { runCmdSync('ip', ['route', 'replace', lanSubnet, 'dev', 'wg0']) } catch {}
+    }
+  }
+
+  return {
+    status: 200,
+    body: { message: 'Static route diperbarui.', name, lan_subnet: lanSubnet, ont_ip: ontIp },
+  }
+}
+
 module.exports = router
 // Ekspos builder agar endpoint provisioning (server-to-server) bisa pakai ulang.
 module.exports.buildOntStatus = buildOntStatus
 // Ekspos core create agar endpoint provisioning (X-API-Key) bisa pakai ulang.
 module.exports.createL2tpUser = createL2tpUser
 module.exports.createWgPeer = createWgPeer
+// Ekspos core update static route (X-API-Key) — dashboard GenieACS hanya set route.
+module.exports.updateL2tpRoute = updateL2tpRoute
+module.exports.updateWgPeerRoute = updateWgPeerRoute

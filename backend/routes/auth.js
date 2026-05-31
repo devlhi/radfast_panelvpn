@@ -278,6 +278,7 @@ router.post(
 // Provisioning API Key management (JWT-protected)
 // ═════════════════════════════════════════════════════════════════════════
 const keyStore = require('../lib/provisioningKeyStore')
+const ipStore = require('../lib/provisioningIpStore')
 
 router.get('/provisioning-key', auth, (req, res) => {
   const meta = keyStore.getMeta()
@@ -335,6 +336,31 @@ router.put('/provisioning-key', auth,
       })
     } catch (e) {
       return res.status(400).json({ message: e.message || 'Gagal menyimpan API key.' })
+    }
+  },
+)
+
+router.get('/provisioning-ip-allowlist', auth, (req, res) => {
+  res.json(ipStore.getMeta())
+})
+
+router.put('/provisioning-ip-allowlist', auth,
+  body('allow').isArray({ max: 200 }),
+  body('allow.*').optional().isString().isLength({ min: 1, max: 64 }),
+  (req, res) => {
+    const errors = validationResult(req)
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ message: 'Format allowlist tidak valid.' })
+    }
+    try {
+      const result = ipStore.setList(req.body.allow)
+      audit.record('provision.ip_allowlist_set', {
+        username: req.admin.sub,
+        count: result.allow.length,
+      }, req)
+      res.json({ ok: true, ...ipStore.getMeta() })
+    } catch (e) {
+      return res.status(400).json({ message: e.message || 'Gagal menyimpan allowlist IP.' })
     }
   },
 )

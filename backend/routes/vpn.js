@@ -895,6 +895,11 @@ router.get(
     const ontComment = user.ont_ip
       ? `\n# IP manajemen ONT: ${user.ont_ip} (pastikan reachable dari router).`
       : ''
+    // NAT: trafik dari subnet VPN ke subnet ONT di-masquerade ke IP LAN router,
+    // supaya ONT bisa balas (ONT tak punya route balik ke subnet VPN).
+    const natRule = user.lan_subnet
+      ? `\n\n/ip firewall nat\nadd chain=srcnat action=masquerade src-address=${cfg.subnet} dst-address=${user.lan_subnet} comment="RadFast ACS - akses ONT dari VPN"`
+      : ''
 
     // ROS6 vs ROS7: sintaks l2tp-client sama, tapi profil enkripsi & format beda.
     let config
@@ -909,7 +914,7 @@ add name="vpn-radfast" connect-to=${serverIP} user="${user.username}" \\
 
 /ip route \\
 add dst-address=${cfg.subnet} gateway="vpn-radfast" comment="RadFast ACS VPN"
-${lanComment}${ontComment}
+${lanComment}${ontComment}${natRule}
 
 # Verifikasi:
 /interface l2tp-client print
@@ -925,7 +930,7 @@ add name="vpn-radfast" connect-to=${serverIP} user="${user.username}" password="
 
 /ip route
 add dst-address=${cfg.subnet} gateway="vpn-radfast" comment="RadFast ACS VPN"
-${lanComment}${ontComment}
+${lanComment}${ontComment}${natRule}
 
 # Verifikasi:
 /interface l2tp-client print
@@ -1481,6 +1486,12 @@ router.get(
     const ontComment = peer.ont_ip
       ? `\n# IP manajemen ONT: ${peer.ont_ip}`
       : ''
+    // NAT: trafik dari subnet VPN ke subnet ONT di-masquerade ke IP LAN router,
+    // supaya ONT bisa balas (ONT tak punya route balik ke subnet VPN).
+    const natRule = peer.lan_subnet
+      ? `\n\n/ip firewall nat\nadd chain=srcnat action=masquerade src-address=${cfg.subnet} dst-address=${peer.lan_subnet} comment="RadFast ACS - akses ONT dari VPN"` +
+        `\n\n/ip firewall filter\nadd chain=forward action=accept in-interface="wg-radfast" comment="RadFast ACS - izinkan forward dari VPN"`
+      : ''
 
     const config = `# ── WireGuard RadFast VPN ──────────────────────────────
 # RouterOS 7.x — paste di terminal MikroTik
@@ -1501,7 +1512,7 @@ add interface="wg-radfast" address="${peer.peer_ip}/24"
 
 /ip route
 add dst-address=${cfg.subnet} gateway="wg-radfast" comment="RadFast ACS"
-${lanRoute}${ontComment}
+${lanRoute}${ontComment}${natRule}
 
 # Verifikasi:
 /interface wireguard peers print`

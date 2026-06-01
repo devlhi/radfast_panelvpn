@@ -48,6 +48,7 @@
               <th>Instance</th>
               <th>UI Port</th>
               <th>CWMP Port</th>
+              <th>REST API Port</th>
               <th>Database</th>
               <th>Status</th>
               <th style="text-align:right">Actions</th>
@@ -55,12 +56,12 @@
           </thead>
           <tbody>
             <tr v-if="loading">
-              <td colspan="6">
+              <td colspan="7">
                 <div class="rf-empty"><div class="rf-spinner"></div><span>Memuat instances…</span></div>
               </td>
             </tr>
             <tr v-else-if="filtered.length === 0">
-              <td colspan="6">
+              <td colspan="7">
                 <div class="rf-empty">
                   <div class="rf-empty-ic">
                     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/></svg>
@@ -91,6 +92,10 @@
               </td>
               <td>
                 <span class="code-chip" style="color:var(--purple)">{{ inst.cwmp_port }}</span>
+              </td>
+              <td>
+                <span v-if="inst.nbi_proxy_port" class="code-chip" style="color:var(--success)" :title="restApiUrl(inst)">{{ inst.nbi_proxy_port }}</span>
+                <span v-else class="code-chip" style="color:var(--muted)" title="Belum diset RADFAST_NBI_PROXY_PORT — akses via port UI">—</span>
               </td>
               <td>
                 <code class="rf-db">{{ inst.db }}</code>
@@ -274,6 +279,16 @@ function instanceUrl(inst) {
   const host = inst.ip || window.location.hostname
   const proto = window.location.protocol === 'https:' ? 'https:' : 'http:'
   return `${proto}//${host}:${inst.ui_port}`
+}
+
+// ── URL REST API: pakai port khusus NBI (jika ada) + secret path ───────────
+function restApiUrl(inst) {
+  const host = inst.ip || window.location.hostname
+  const proto = window.location.protocol === 'https:' ? 'https:' : 'http:'
+  const port = inst.nbi_proxy_port || inst.ui_port
+  if (!port) return ''
+  const gate = inst.nbi_gate_path || ''
+  return `${proto}//${host}:${port}${gate}/devices`
 }
 
 // ── Name validation ──────────────────────────────────────────────────────

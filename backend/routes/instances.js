@@ -126,6 +126,7 @@ function toResponse(inst) {
     fs_port: inst.fs_port || (inst.cwmp_port ? inst.cwmp_port + 20 : null),
     ui_internal: env.RADFAST_UI_INTERNAL ? num(env.RADFAST_UI_INTERNAL) : null,
     nbi_gate_path: env.RADFAST_NBI_GATE_PATH || null,
+    nbi_proxy_port: env.RADFAST_NBI_PROXY_PORT ? num(env.RADFAST_NBI_PROXY_PORT) : null,
     db: inst.db,
     ip: inst.ip || null,
     created: inst.created || null,

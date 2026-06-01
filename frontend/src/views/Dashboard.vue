@@ -131,6 +131,7 @@
                   <div class="rf-port-row">
                     <span class="code-chip" style="color:var(--info)">UI {{ inst.ui_port }}</span>
                     <span class="code-chip" style="color:var(--purple)">CWMP {{ inst.cwmp_port }}</span>
+                    <span v-if="inst.nbi_proxy_port" class="code-chip" style="color:var(--success)">API {{ inst.nbi_proxy_port }}</span>
                   </div>
                 </td>
                 <td>

@@ -935,18 +935,27 @@ router.put(
 
 router.get('/wireguard/peers', (req, res) => {
   const peers = readJSON(WG_PEERS_FILE)
-  let activePubkeys = []
+  let wgHandshakes = {}
   if (isLinux) {
     try {
-      const out = runCmdSync('wg', ['show', 'wg0', 'peers'])
-      activePubkeys = out.trim().split('\n').filter(Boolean)
+      const out = runCmdSync('wg', ['show', 'wg0', 'latest-handshakes'])
+      for (const line of out.trim().split('\n')) {
+        const [pubkey, ts] = line.split('\t')
+        if (pubkey) wgHandshakes[pubkey] = Number(ts) || 0
+      }
     } catch {}
   }
-  res.json(peers.map(p => ({
-    ...p,
-    privkey: undefined, // never leak private key on listing
-    connected: activePubkeys.includes(p.pubkey),
-  })))
+  const nowSec = Math.floor(Date.now() / 1000)
+  const HANDSHAKE_FRESH = 180
+
+  res.json(peers.map(p => {
+    const lastHandshake = wgHandshakes[p.pubkey] || 0
+    return {
+      ...p,
+      privkey: undefined, // never leak private key on listing
+      connected: lastHandshake > 0 && (nowSec - lastHandshake) < HANDSHAKE_FRESH,
+    }
+  }))
 })
 
 // ── Core: buat peer WireGuard (dipakai route session & provisioning API) ──

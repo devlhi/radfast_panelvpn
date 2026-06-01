@@ -171,7 +171,10 @@
                   </div>
                 </td>
                 <td>
-                  <span class="badge" :class="user.connected ? 'badge-success' : 'badge-muted'">
+                  <span v-if="user.disabled" class="badge badge-muted" title="VPN dinonaktifkan">
+                    <span class="dot dot-muted"></span>Disabled
+                  </span>
+                  <span v-else class="badge" :class="user.connected ? 'badge-success' : 'badge-muted'">
                     <span class="dot" :class="user.connected ? 'dot-success' : 'dot-muted'"></span>
                     {{ user.connected ? 'Connected' : 'Idle' }}
                   </span>
@@ -191,9 +194,18 @@
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
                       ROS Config
                     </button>
+                    <button class="rf-act rf-act-info" @click="openEdit(user, 'l2tp')" title="Edit VPN">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                      Edit
+                    </button>
                     <button class="rf-act rf-act-info" @click="openLimitModal({...user, name: user.username, peer_ip: '—'}, 'l2tp')" title="Set Speed Limit">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/><circle cx="12" cy="12" r="4"/></svg>
                       Limit
+                    </button>
+                    <button class="rf-act" :class="user.disabled ? 'rf-act-success' : 'rf-act-muted'" :disabled="togglingState === user.username" @click="toggleState(user, 'l2tp')" :title="user.disabled ? 'Aktifkan VPN' : 'Nonaktifkan VPN'">
+                      <svg v-if="user.disabled" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                      <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                      {{ user.disabled ? 'Enable' : 'Disable' }}
                     </button>
                     <button class="rf-act rf-act-danger" @click="deleteL2tpUser(user.username)">
                       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>
@@ -325,7 +337,10 @@
                   </div>
                 </td>
                 <td>
-                  <span class="badge" :class="peer.connected ? 'badge-success' : 'badge-muted'">
+                  <span v-if="peer.disabled" class="badge badge-muted" title="VPN dinonaktifkan">
+                    <span class="dot dot-muted"></span>Disabled
+                  </span>
+                  <span v-else class="badge" :class="peer.connected ? 'badge-success' : 'badge-muted'">
                     <span class="dot" :class="peer.connected ? 'dot-success' : 'dot-muted'"></span>
                     {{ peer.connected ? 'Connected' : 'Idle' }}
                   </span>
@@ -345,9 +360,18 @@
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
                       ROS Config
                     </button>
+                    <button class="rf-act rf-act-info" @click="openEdit(peer, 'wg')" title="Edit VPN">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                      Edit
+                    </button>
                     <button class="rf-act rf-act-info" @click="openLimitModal(peer)" title="Set Speed Limit">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/><circle cx="12" cy="12" r="4"/></svg>
                       Limit
+                    </button>
+                    <button class="rf-act" :class="peer.disabled ? 'rf-act-success' : 'rf-act-muted'" :disabled="togglingState === peer.name" @click="toggleState(peer, 'wg')" :title="peer.disabled ? 'Aktifkan VPN' : 'Nonaktifkan VPN'">
+                      <svg v-if="peer.disabled" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                      <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                      {{ peer.disabled ? 'Enable' : 'Disable' }}
                     </button>
                     <button class="rf-act rf-act-danger" @click="deleteWgPeer(peer.name)">
                       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>
@@ -598,6 +622,72 @@
             <button @click="addWgPeer" :disabled="addLoading" class="btn-primary">
               <span v-if="addLoading" class="rf-spinner" style="width:14px;height:14px;border-width:2px"></span>
               {{ addLoading ? 'Creating…' : 'Create Peer' }}
+            </button>
+          </footer>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- ═══ Modal: Edit VPN (L2TP / WG) ═══ -->
+    <Transition name="modal">
+      <div v-if="openEditModal" class="rf-modal" @click.self="openEditModal = false">
+        <div class="modal-box rf-modal-card">
+          <header class="rf-modal-head">
+            <div class="rf-modal-head-left">
+              <span class="rf-modal-icon" style="background:var(--info-soft);color:var(--info)">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+              </span>
+              <div>
+                <h3>Edit VPN — {{ editForm.name }}</h3>
+                <p>{{ editForm._type === 'l2tp' ? 'L2TP / IPsec user' : 'WireGuard peer' }} · ubah instance, ONT, & catatan.</p>
+              </div>
+            </div>
+            <button @click="openEditModal = false" class="rf-modal-close">×</button>
+          </header>
+          <div class="rf-modal-body">
+            <Transition name="slide">
+              <div v-if="editError" class="rf-alert">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/></svg>
+                <span>{{ editError }}</span>
+              </div>
+            </Transition>
+            <div class="rf-form-field">
+              <label>GenieACS Instance <span class="rf-form-hint-inline">opsional</span></label>
+              <select v-model="editForm.instance">
+                <option value="">— Pilih instance —</option>
+                <option v-for="inst in instanceList" :key="inst.name" :value="inst.name">{{ inst.name }}</option>
+              </select>
+              <span class="rf-form-hint-inline">Pindahkan VPN ini ke instance GenieACS lain.</span>
+            </div>
+            <div v-if="editForm._type === 'l2tp'" class="rf-form-field">
+              <label>Versi RouterOS</label>
+              <select v-model="editForm.ros_version">
+                <option value="7">RouterOS 7.x</option>
+                <option value="6">RouterOS 6.x (L2TP saja)</option>
+              </select>
+            </div>
+            <div class="rf-form-row">
+              <div class="rf-form-field">
+                <label>IP Block ONT <span class="rf-form-hint-inline">opsional</span></label>
+                <input v-model="editForm.lan_subnet" type="text" placeholder="192.168.100.0/24" />
+                <span class="rf-form-hint-inline">Kosongkan untuk menghapus routing ONT.</span>
+              </div>
+              <div class="rf-form-field">
+                <label>IP Manajemen ONT <span class="rf-form-hint-inline">opsional</span></label>
+                <input v-model="editForm.ont_ip" type="text" placeholder="192.168.100.2" />
+                <span class="rf-form-hint-inline">IP yang akan di-ping untuk cek status.</span>
+              </div>
+            </div>
+            <div class="rf-form-field">
+              <label>Catatan <span class="rf-form-hint-inline">opsional</span></label>
+              <input v-model="editForm.note" type="text" placeholder="Lokasi / nama pelanggan" />
+            </div>
+          </div>
+          <footer class="rf-modal-foot">
+            <button @click="openEditModal = false" class="btn-secondary">Cancel</button>
+            <button @click="saveEdit" :disabled="editLoading" class="btn-primary">
+              <span v-if="editLoading" class="rf-spinner" style="width:14px;height:14px;border-width:2px"></span>
+              {{ editLoading ? 'Saving…' : 'Save Changes' }}
             </button>
           </footer>
         </div>
@@ -973,6 +1063,13 @@ const installWgForm   = ref({ port: 51820 })
 const addL2tpForm     = ref({ username: '', password: '', instance: '', note: '', ros_version: '7', lan_subnet: '', ont_ip: '' })
 const addWgForm       = ref({ name: '', instance: '', note: '', lan_subnet: '', ont_ip: '' })
 
+// ── Edit VPN (L2TP user / WG peer) ─────────────────────────────────────────
+const openEditModal = ref(false)
+const editLoading    = ref(false)
+const editError      = ref('')
+const editForm       = ref({ _type: 'wg', name: '', instance: '', note: '', ros_version: '7', lan_subnet: '', ont_ip: '' })
+const togglingState  = ref('')   // name yang sedang di-toggle enable/disable
+
 // Status VPN ONT (per akun): { l2tp:[...], wireguard:[...] }
 const ontStatus    = ref({ l2tp: [], wireguard: [] })
 let ontStatusTimer = null
@@ -1094,6 +1191,61 @@ async function deleteWgPeer(name) {
   if (!confirm(`Hapus WireGuard peer "${name}"?`)) return
   try { await axios.delete(`/api/vpn/wireguard/peers/${name}`); await fetchAll() }
   catch (e) { alert(e.response?.data?.message || 'Gagal hapus') }
+}
+
+// ── Edit VPN (L2TP user / WG peer) ─────────────────────────────────────────
+function openEdit(item, type) {
+  editError.value = ''
+  editForm.value = {
+    _type:       type,
+    name:        type === 'l2tp' ? item.username : item.name,
+    instance:    item.instance || '',
+    note:        item.note || '',
+    ros_version: type === 'l2tp' ? (String(item.ros_version) === '6' ? '6' : '7') : '7',
+    lan_subnet:  item.lan_subnet || '',
+    ont_ip:      item.ont_ip || '',
+  }
+  openEditModal.value = true
+}
+
+async function saveEdit() {
+  editError.value = ''
+  editLoading.value = true
+  try {
+    const f = editForm.value
+    const payload = {
+      instance:   f.instance || '',
+      note:       f.note || '',
+      lan_subnet: f.lan_subnet || null,
+      ont_ip:     f.ont_ip || null,
+    }
+    if (f._type === 'l2tp') {
+      payload.ros_version = f.ros_version
+      await axios.put(`/api/vpn/l2tp/users/${f.name}`, payload)
+    } else {
+      await axios.put(`/api/vpn/wireguard/peers/${f.name}`, payload)
+    }
+    openEditModal.value = false
+    await fetchAll()
+    showToast('✓ VPN berhasil diperbarui')
+  } catch (e) { editError.value = e.response?.data?.message || 'Gagal menyimpan perubahan.' }
+  finally { editLoading.value = false }
+}
+
+async function toggleState(item, type) {
+  const name = type === 'l2tp' ? item.username : item.name
+  const next = !item.disabled
+  if (!confirm(next ? `Nonaktifkan VPN "${name}"? Koneksi akan diputus.` : `Aktifkan kembali VPN "${name}"?`)) return
+  togglingState.value = name
+  try {
+    const url = type === 'l2tp'
+      ? `/api/vpn/l2tp/users/${name}/state`
+      : `/api/vpn/wireguard/peers/${name}/state`
+    await axios.patch(url, { disabled: next })
+    await fetchAll()
+    showToast(next ? `✓ "${name}" dinonaktifkan` : `✓ "${name}" diaktifkan`)
+  } catch (e) { alert(e.response?.data?.message || 'Gagal mengubah status') }
+  finally { togglingState.value = '' }
 }
 
 function openPoolModal(type) {
@@ -1422,6 +1574,11 @@ onUnmounted(() => {
 .rf-act-info:hover:not(:disabled)    { background: rgba(96,190,255,.18); }
 .rf-act-danger  { background: var(--danger-soft);  color: var(--danger);  border-color: rgba(255,94,94,.22); padding: 6px 8px; }
 .rf-act-danger:hover:not(:disabled)  { background: rgba(255,94,94,.2); }
+.rf-act-success { background: var(--success-soft); color: var(--success); border-color: rgba(26,188,156,.22); }
+.rf-act-success:hover:not(:disabled) { background: rgba(26,188,156,.2); }
+.rf-act-muted   { background: rgba(120,130,160,.12); color: var(--text-muted); border-color: rgba(120,130,160,.22); }
+.rf-act-muted:hover:not(:disabled)   { background: rgba(120,130,160,.22); }
+.rf-act:disabled { opacity: .55; cursor: not-allowed; }
 
 /* ─── Speed badge ─── */
 .rf-speed-badge { display: flex; flex-direction: column; gap: 2px; }

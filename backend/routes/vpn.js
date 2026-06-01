@@ -172,6 +172,25 @@ function removeL2tpOntRoute(lanSubnet) {
   try { runCmdSync('ip', ['route', 'del', lanSubnet]) } catch {}
 }
 
+/**
+ * Tulis ulang baris user di /etc/ppp/chap-secrets (idempoten).
+ * - password = string → set/replace baris user.
+ * - password = null   → hapus baris user (dipakai saat disable).
+ * staticField = IP statis client atau '*'.
+ */
+function rewriteChapSecret(username, password, staticField) {
+  if (!isLinux) return
+  try {
+    const file = '/etc/ppp/chap-secrets'
+    let lines = fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n') : []
+    lines = lines.filter(l => !l.startsWith(username + ' '))
+    if (password != null) {
+      lines.push(`${username} * "${password}" ${staticField || '*'}`)
+    }
+    fs.writeFileSync(file, lines.join('\n').replace(/\n{3,}/g, '\n\n'), { mode: 0o600 })
+  } catch (e) { console.error('chap-secrets rewrite:', e.message) }
+}
+
 /** Default IP pool L2TP. */
 function l2tpPoolDefaults() {
   return {
@@ -495,7 +514,8 @@ router.get('/l2tp/users', (req, res) => {
   res.json(users.map(u => ({
     ...u,
     password: undefined, // never expose plaintext over wire — see /l2tp/users/:name/secret
-    connected: connected.includes(u.username),
+    disabled: !!u.disabled,
+    connected: !u.disabled && connected.includes(u.username),
   })))
 })
 
@@ -672,6 +692,116 @@ router.put(
         ? `Limit diterapkan: ↓${rateDown}M ↑${rateUp}M`
         : 'Speed limit dihapus.',
     })
+  },
+)
+
+// PUT /api/vpn/l2tp/users/:name — edit metadata (instance, note, ros, subnet ONT, IP ONT)
+router.put(
+  '/l2tp/users/:name',
+  param('name').isString().matches(/^[a-zA-Z0-9_.-]{1,64}$/),
+  body('instance').optional().isString().isLength({ max: 64 }).matches(/^[a-zA-Z0-9_-]*$/),
+  body('note').optional().isString().isLength({ max: 200 }),
+  body('ros_version').optional().isIn(['6', '7', 6, 7]),
+  body('lan_subnet').optional({ nullable: true }).isString().isLength({ max: 32 }),
+  body('ont_ip').optional({ nullable: true }).isString().isLength({ max: 18 }),
+  (req, res) => {
+    if (!handleValidation(req, res)) return
+    const name = req.params.name
+    const users = readJSON(L2TP_USERS_FILE)
+    const idx = users.findIndex(u => u.username === name)
+    if (idx === -1) return res.status(404).json({ message: 'User tidak ditemukan.' })
+    const u = users[idx]
+    const oldSubnet = u.lan_subnet || null
+
+    // ── Validasi subnet ONT & IP ONT (opsional) ──────────────────────────
+    let lanSubnet = oldSubnet
+    if (req.body.lan_subnet !== undefined) {
+      if (req.body.lan_subnet == null || String(req.body.lan_subnet).trim() === '') {
+        lanSubnet = null
+      } else {
+        lanSubnet = normalizeOntCidr(req.body.lan_subnet)
+        if (!lanSubnet) return res.status(400).json({ message: 'IP block ONT harus format CIDR, mis. 192.168.100.0/24.' })
+      }
+    }
+    let ontIp = u.ont_ip || null
+    if (req.body.ont_ip !== undefined) {
+      if (req.body.ont_ip == null || String(req.body.ont_ip).trim() === '') {
+        ontIp = null
+      } else {
+        ontIp = String(req.body.ont_ip).trim()
+        if (!isValidOntHostIp(ontIp)) return res.status(400).json({ message: 'IP manajemen ONT bukan IPv4 valid.' })
+      }
+    }
+
+    // ── Bila subnet ONT baru muncul tapi belum ada IP statis, assign ─────
+    let vpnIp = u.vpn_ip || null
+    if (lanSubnet && !vpnIp) {
+      const l2tpCfg = fs.existsSync(L2TP_CFG_FILE) ? (readJSON(L2TP_CFG_FILE) || {}) : {}
+      vpnIp = assignL2tpStaticIp(users, l2tpCfg)
+      if (!vpnIp) return res.status(409).json({ message: 'Pool IP L2TP penuh, tidak bisa assign IP statis untuk routing ONT.' })
+    }
+
+    if (req.body.instance !== undefined) u.instance = req.body.instance || ''
+    if (req.body.note !== undefined) u.note = safeNote(req.body.note)
+    if (req.body.ros_version !== undefined) u.ros_version = String(req.body.ros_version) === '6' ? '6' : '7'
+    u.lan_subnet = lanSubnet
+    u.ont_ip = ontIp
+    u.vpn_ip = vpnIp
+    writeJSON(L2TP_USERS_FILE, users)
+
+    if (isLinux) {
+      // Sinkronkan IP statis di chap-secrets bila user tidak di-disable.
+      if (!u.disabled) rewriteChapSecret(u.username, u.password, vpnIp || '*')
+      // Routing ONT: hapus route lama bila subnet berubah, lalu pasang yang baru.
+      if (oldSubnet && oldSubnet !== lanSubnet) removeL2tpOntRoute(oldSubnet)
+      syncL2tpRouteMap()
+      if (lanSubnet) applyL2tpOntRoute(u.username, lanSubnet)
+    }
+
+    audit.record('vpn.l2tp.user_edit', { username: name, instance: u.instance, lan_subnet: lanSubnet || '' }, req)
+    res.json({ message: `User ${name} diperbarui.`, user: { ...u, password: undefined } })
+  },
+)
+
+// PATCH /api/vpn/l2tp/users/:name/state — enable / disable user
+router.patch(
+  '/l2tp/users/:name/state',
+  param('name').isString().matches(/^[a-zA-Z0-9_.-]{1,64}$/),
+  body('disabled').isBoolean(),
+  (req, res) => {
+    if (!handleValidation(req, res)) return
+    const name = req.params.name
+    const users = readJSON(L2TP_USERS_FILE)
+    const idx = users.findIndex(u => u.username === name)
+    if (idx === -1) return res.status(404).json({ message: 'User tidak ditemukan.' })
+    const u = users[idx]
+    const disabled = req.body.disabled === true || req.body.disabled === 'true'
+    u.disabled = disabled
+    writeJSON(L2TP_USERS_FILE, users)
+
+    if (isLinux) {
+      if (disabled) {
+        // Cabut kredensial agar tak bisa dial-in, dan putuskan sesi aktif.
+        rewriteChapSecret(u.username, null)
+        try {
+          const out = runCmdSync('ls', ['/var/run/ppp']) || ''
+          for (const f of out.trim().split('\n').filter(Boolean)) {
+            if (f.replace('.pid', '') === u.username) {
+              try { runCmdSync('pkill', ['-f', `pppd.*${u.username}`]) } catch {}
+            }
+          }
+        } catch {}
+        if (u.lan_subnet) removeL2tpOntRoute(u.lan_subnet)
+      } else {
+        // Pulihkan kredensial + routing ONT.
+        rewriteChapSecret(u.username, u.password, u.vpn_ip || '*')
+        syncL2tpRouteMap()
+        if (u.lan_subnet) applyL2tpOntRoute(u.username, u.lan_subnet)
+      }
+    }
+
+    audit.record('vpn.l2tp.user_state', { username: name, disabled }, req)
+    res.json({ message: disabled ? `User ${name} dinonaktifkan.` : `User ${name} diaktifkan.`, disabled })
   },
 )
 
@@ -953,7 +1083,8 @@ router.get('/wireguard/peers', (req, res) => {
     return {
       ...p,
       privkey: undefined, // never leak private key on listing
-      connected: lastHandshake > 0 && (nowSec - lastHandshake) < HANDSHAKE_FRESH,
+      disabled: !!p.disabled,
+      connected: !p.disabled && lastHandshake > 0 && (nowSec - lastHandshake) < HANDSHAKE_FRESH,
     }
   }))
 })
@@ -1226,6 +1357,99 @@ router.put(
         ? `Limit diterapkan: ↓${rateDown}M ↑${rateUp}M`
         : 'Speed limit dihapus (unlimited).',
     })
+  },
+)
+
+// PUT /api/vpn/wireguard/peers/:name — edit metadata (instance, note, subnet ONT, IP ONT)
+router.put(
+  '/wireguard/peers/:name',
+  param('name').isString().matches(/^[a-z][a-z0-9-]{0,40}$/),
+  body('instance').optional().isString().isLength({ max: 64 }).matches(/^[a-zA-Z0-9_-]*$/),
+  body('note').optional().isString().isLength({ max: 200 }),
+  body('lan_subnet').optional({ nullable: true }).isString().isLength({ max: 32 }),
+  body('ont_ip').optional({ nullable: true }).isString().isLength({ max: 18 }),
+  async (req, res) => {
+    if (!handleValidation(req, res)) return
+    const name = req.params.name
+    const peers = readJSON(WG_PEERS_FILE)
+    const idx = peers.findIndex(p => p.name === name)
+    if (idx === -1) return res.status(404).json({ message: 'Peer tidak ditemukan.' })
+    const p = peers[idx]
+    const oldSubnet = p.lan_subnet || null
+
+    let lanSubnet = oldSubnet
+    if (req.body.lan_subnet !== undefined) {
+      if (req.body.lan_subnet == null || String(req.body.lan_subnet).trim() === '') {
+        lanSubnet = null
+      } else {
+        lanSubnet = normalizeOntCidr(req.body.lan_subnet)
+        if (!lanSubnet) return res.status(400).json({ message: 'IP block ONT harus format CIDR, mis. 192.168.100.0/24.' })
+      }
+    }
+    let ontIp = p.ont_ip || null
+    if (req.body.ont_ip !== undefined) {
+      if (req.body.ont_ip == null || String(req.body.ont_ip).trim() === '') {
+        ontIp = null
+      } else {
+        ontIp = String(req.body.ont_ip).trim()
+        if (!isValidOntHostIp(ontIp)) return res.status(400).json({ message: 'IP manajemen ONT bukan IPv4 valid.' })
+      }
+    }
+
+    if (req.body.instance !== undefined) p.instance = req.body.instance || ''
+    if (req.body.note !== undefined) p.note = safeNote(req.body.note)
+    p.lan_subnet = lanSubnet
+    p.ont_ip = ontIp
+    writeJSON(WG_PEERS_FILE, peers)
+
+    // Update allowed-ips di interface + route ONT bila peer aktif.
+    if (isLinux && !p.disabled) {
+      const allowed = lanSubnet ? `${p.peer_ip}/32,${lanSubnet}` : `${p.peer_ip}/32`
+      try { await runCmd('wg', ['set', 'wg0', 'peer', p.pubkey, 'allowed-ips', allowed]) } catch {}
+      if (oldSubnet && oldSubnet !== lanSubnet) {
+        try { runCmdSync('ip', ['route', 'del', oldSubnet]) } catch {}
+      }
+      if (lanSubnet) {
+        try { runCmdSync('ip', ['route', 'replace', lanSubnet, 'dev', 'wg0']) } catch {}
+      }
+    }
+
+    audit.record('vpn.wg.peer_edit', { name, instance: p.instance, lan_subnet: lanSubnet || '' }, req)
+    res.json({ message: `Peer ${name} diperbarui.`, peer: { ...p, privkey: undefined } })
+  },
+)
+
+// PATCH /api/vpn/wireguard/peers/:name/state — enable / disable peer
+router.patch(
+  '/wireguard/peers/:name/state',
+  param('name').isString().matches(/^[a-z][a-z0-9-]{0,40}$/),
+  body('disabled').isBoolean(),
+  async (req, res) => {
+    if (!handleValidation(req, res)) return
+    const name = req.params.name
+    const peers = readJSON(WG_PEERS_FILE)
+    const idx = peers.findIndex(p => p.name === name)
+    if (idx === -1) return res.status(404).json({ message: 'Peer tidak ditemukan.' })
+    const p = peers[idx]
+    const disabled = req.body.disabled === true || req.body.disabled === 'true'
+    p.disabled = disabled
+    writeJSON(WG_PEERS_FILE, peers)
+
+    if (isLinux) {
+      if (disabled) {
+        // Lepas peer dari interface (putus tunnel) + hapus route ONT.
+        try { await runCmd('wg', ['set', 'wg0', 'peer', p.pubkey, 'remove']) } catch {}
+        if (p.lan_subnet) { try { runCmdSync('ip', ['route', 'del', p.lan_subnet]) } catch {} }
+      } else {
+        // Pasang ulang peer ke interface.
+        const allowed = p.lan_subnet ? `${p.peer_ip}/32,${p.lan_subnet}` : `${p.peer_ip}/32`
+        try { await runCmd('wg', ['set', 'wg0', 'peer', p.pubkey, 'allowed-ips', allowed]) } catch {}
+        if (p.lan_subnet) { try { runCmdSync('ip', ['route', 'replace', p.lan_subnet, 'dev', 'wg0']) } catch {} }
+      }
+    }
+
+    audit.record('vpn.wg.peer_state', { name, disabled }, req)
+    res.json({ message: disabled ? `Peer ${name} dinonaktifkan.` : `Peer ${name} diaktifkan.`, disabled })
   },
 )
 

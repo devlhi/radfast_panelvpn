@@ -541,8 +541,29 @@ function createL2tpUser(opts) {
   validateUsername(username)
 
   const users = readJSON(L2TP_USERS_FILE)
-  if (users.find(u => u.username === username)) {
-    return { status: 409, body: { message: `User "${username}" sudah ada.` } }
+  const existingIdx = users.findIndex(u => u.username === username)
+  if (existingIdx !== -1) {
+    const existing = users[existingIdx]
+    const rateDown = parseInt(opts.rate_down, 10) || 0
+    const rateUp = parseInt(opts.rate_up, 10) || 0
+    if (rateDown || rateUp) {
+      existing.rate_down = rateDown
+      existing.rate_up = rateUp
+      users[existingIdx] = existing
+      writeJSON(L2TP_USERS_FILE, users)
+      if (isLinux) writePppIpUpScript()
+    }
+    return {
+      status: 409,
+      body: {
+        message: `User "${username}" sudah ada.`,
+        user: { ...existing },
+        vpn_ip: existing.vpn_ip || null,
+        ros_version: existing.ros_version || '7',
+        lan_subnet: existing.lan_subnet || null,
+        source: existing.source || 'api',
+      },
+    }
   }
 
   // ── RouterOS version (default 7; ROS6 hanya L2TP) ──────────────────────
@@ -583,6 +604,8 @@ function createL2tpUser(opts) {
     lan_subnet: lanSubnet,
     ont_ip: ontIp,
     vpn_ip: vpnIp,
+    rate_down: parseInt(opts.rate_down, 10) || 0,
+    rate_up: parseInt(opts.rate_up, 10) || 0,
     source,
     created: new Date().toISOString(),
   })
@@ -601,6 +624,9 @@ function createL2tpUser(opts) {
     if (lanSubnet) {
       syncL2tpRouteMap()
       applyL2tpOntRoute(username, lanSubnet)
+    }
+    if (opts.rate_down || opts.rate_up) {
+      writePppIpUpScript()
     }
   }
 
@@ -1126,8 +1152,27 @@ async function createWgPeer(opts) {
     : { port: 51820, ...wireguardPoolDefaults() }
 
   const peers = readJSON(WG_PEERS_FILE)
-  if (peers.find(p => p.name === name)) {
-    return { status: 409, body: { message: 'Nama sudah dipakai.' } }
+  const existingPeerIdx = peers.findIndex(p => p.name === name)
+  if (existingPeerIdx !== -1) {
+    const existing = peers[existingPeerIdx]
+    const rateDown = parseInt(opts.rate_down, 10) || 0
+    const rateUp = parseInt(opts.rate_up, 10) || 0
+    if (rateDown || rateUp) {
+      existing.rate_down = rateDown
+      existing.rate_up = rateUp
+      peers[existingPeerIdx] = existing
+      writeJSON(WG_PEERS_FILE, peers)
+      if (isLinux) {
+        try { applyPeerTcLimit(existing.peer_ip, rateDown, rateUp) } catch {}
+      }
+    }
+    return {
+      status: 409,
+      body: {
+        message: 'Nama sudah dipakai.',
+        peer: { ...existing, privkey: undefined },
+      },
+    }
   }
 
   let privKey, pubKey
@@ -1180,6 +1225,8 @@ async function createWgPeer(opts) {
     ros_version: '7',
     lan_subnet: lanSubnet,
     ont_ip: ontIp,
+    rate_down: parseInt(opts.rate_down, 10) || 0,
+    rate_up: parseInt(opts.rate_up, 10) || 0,
     source,
     created: new Date().toISOString(),
   }
@@ -1198,6 +1245,10 @@ async function createWgPeer(opts) {
       // Static route ke subnet ONT via interface wg0 (idempoten).
       if (lanSubnet) {
         try { runCmdSync('ip', ['route', 'replace', lanSubnet, 'dev', 'wg0']) } catch {}
+      }
+      // Terapkan speed limit langsung bila di-set saat create.
+      if (peer.rate_down || peer.rate_up) {
+        try { applyPeerTcLimit(peerIP, peer.rate_down, peer.rate_up) } catch {}
       }
     } catch (e) { console.error('wg set:', e.message) }
   }

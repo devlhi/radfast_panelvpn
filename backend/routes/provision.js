@@ -630,6 +630,8 @@ router.post(
   body('ros_version').optional().isIn(['6', '7', 6, 7]),
   body('lan_subnet').optional({ nullable: true }).isString().isLength({ max: 32 }),
   body('ont_ip').optional({ nullable: true }).isString().isLength({ max: 18 }),
+  body('rate_down').optional({ nullable: true }).isInt({ min: 0, max: 10000 }),
+  body('rate_up').optional({ nullable: true }).isInt({ min: 0, max: 10000 }),
   (req, res, next) => {
     if (!handleValidation(req, res)) return
     try {
@@ -644,6 +646,8 @@ router.post(
         ros_version: req.body.ros_version,
         lan_subnet: req.body.lan_subnet,
         ont_ip: req.body.ont_ip,
+        rate_down: req.body.rate_down,
+        rate_up: req.body.rate_up,
         source: 'api',
       })
       if (result.status === 201) {
@@ -672,6 +676,8 @@ router.post(
   body('note').optional().isString().isLength({ max: 200 }),
   body('lan_subnet').optional({ nullable: true }).isString().isLength({ max: 32 }),
   body('ont_ip').optional({ nullable: true }).isString().isLength({ max: 18 }),
+  body('rate_down').optional({ nullable: true }).isInt({ min: 0, max: 10000 }),
+  body('rate_up').optional({ nullable: true }).isInt({ min: 0, max: 10000 }),
   async (req, res, next) => {
     if (!handleValidation(req, res)) return
     try {
@@ -685,6 +691,8 @@ router.post(
         ros_version: req.body.ros_version,
         lan_subnet: req.body.lan_subnet,
         ont_ip: req.body.ont_ip,
+        rate_down: req.body.rate_down,
+        rate_up: req.body.rate_up,
         source: 'api',
       })
       if (result.status === 201) {

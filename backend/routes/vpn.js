@@ -18,6 +18,7 @@ const L2TP_CFG_FILE   = path.join(DATA_DIR, 'l2tp-config.json')
 const WG_PEERS_FILE   = path.join(DATA_DIR, 'wg-peers.json')
 const WG_CFG_FILE     = path.join(DATA_DIR, 'wg-config.json')
 const VPN_DATA        = path.join(DATA_DIR, 'vpn-clients.json')
+const STATIC_ROUTES_FILE = path.join(DATA_DIR, 'static-routes.json')
 
 const isWin = process.platform === 'win32'
 const isLinux = process.platform === 'linux'
@@ -1920,6 +1921,171 @@ function updateWgPeerRoute(opts) {
     body: { message: 'Static route diperbarui.', name, lan_subnet: lanSubnet, ont_ip: ontIp },
   }
 }
+
+// ════════════════════════════════════════════════════════════════════════
+// STATIC ROUTE — routing manual subnet ONT melalui gateway VPN
+// ════════════════════════════════════════════════════════════════════════
+// Admin mendaftarkan subnet LAN ONT (mis. 192.168.1.0/24) dengan gateway
+// berupa IP VPN client (peer WireGuard / IP statis L2TP) atau interface VPN
+// (wg0). Tujuan: server GenieACS bisa ping/akses perangkat di belakang ONT
+// lewat tunnel VPN.
+
+/** Baca daftar static route dari penyimpanan. Selalu array. */
+function readStaticRoutes() {
+  if (!fs.existsSync(STATIC_ROUTES_FILE)) return []
+  const data = readJSON(STATIC_ROUTES_FILE)
+  return Array.isArray(data) ? data : []
+}
+
+/**
+ * Pasang/hapus satu route lewat `ip route`. Idempoten.
+ * gatewayType: 'via' (IP gateway) atau 'dev' (interface, mis. wg0).
+ * Mengembalikan null jika sukses, atau pesan error string.
+ */
+function applyStaticRoute(route) {
+  if (!isLinux) return null
+  try {
+    if (route.gateway_type === 'dev') {
+      runCmdSync('ip', ['route', 'replace', route.subnet, 'dev', route.gateway])
+    } else {
+      runCmdSync('ip', ['route', 'replace', route.subnet, 'via', route.gateway])
+    }
+    return null
+  } catch (e) {
+    return (e.stderr || e.message || 'gagal').toString().trim().slice(-200)
+  }
+}
+
+function removeStaticRouteFromKernel(route) {
+  if (!isLinux) return
+  try { runCmdSync('ip', ['route', 'del', route.subnet]) } catch {}
+}
+
+/**
+ * Pasang ulang semua static route aktif. Dipanggil saat modul dimuat (boot)
+ * agar route tetap ada setelah server/VPS restart.
+ */
+function reapplyStaticRoutes() {
+  if (!isLinux) return
+  const routes = readStaticRoutes()
+  for (const r of routes) {
+    if (r.enabled !== false) applyStaticRoute(r)
+  }
+}
+
+// Pasang ulang saat backend start (route hilang setelah reboot kernel).
+try { reapplyStaticRoutes() } catch (e) { console.error('[vpn.routes] reapply:', e.message) }
+
+// GET — daftar semua static route + status terpasang di kernel.
+router.get('/routes', (req, res) => {
+  const routes = readStaticRoutes()
+  let kernelTable = ''
+  if (isLinux) {
+    try { kernelTable = runCmdSync('ip', ['route', 'show']) || '' } catch {}
+  }
+  const list = routes.map((r) => ({
+    ...r,
+    active: isLinux ? kernelTable.includes(r.subnet) : null,
+  }))
+  res.json({ routes: list, linux: isLinux })
+})
+
+// POST — tambah static route baru.
+router.post(
+  '/routes',
+  body('subnet').isString().isLength({ max: 32 }),
+  body('gateway').isString().isLength({ max: 32 }),
+  body('gateway_type').optional().isIn(['via', 'dev']),
+  body('note').optional({ nullable: true }).isString().isLength({ max: 200 }),
+  (req, res) => {
+    if (!handleValidation(req, res)) return
+
+    const subnet = normalizeOntCidr(req.body.subnet)
+    if (!subnet) {
+      return res.status(400).json({ message: 'Subnet tidak valid. Format CIDR mis. 192.168.1.0/24 (prefix /8–/32).' })
+    }
+
+    const gatewayType = req.body.gateway_type === 'dev' ? 'dev' : 'via'
+    const gateway = String(req.body.gateway || '').trim()
+    if (gatewayType === 'via') {
+      if (!isValidIPv4(gateway)) {
+        return res.status(400).json({ message: 'Gateway harus berupa IP VPN client yang valid (mis. 10.66.66.2).' })
+      }
+    } else {
+      // Interface name (mis. wg0, ppp0). Batasi karakter aman.
+      if (!/^[a-zA-Z0-9_.-]{1,16}$/.test(gateway)) {
+        return res.status(400).json({ message: 'Nama interface tidak valid (mis. wg0).' })
+      }
+    }
+
+    const routes = readStaticRoutes()
+    if (routes.some((r) => r.subnet === subnet)) {
+      return res.status(409).json({ message: `Subnet ${subnet} sudah terdaftar.` })
+    }
+
+    const route = {
+      id: crypto.randomBytes(8).toString('hex'),
+      subnet,
+      gateway,
+      gateway_type: gatewayType,
+      note: safeNote(req.body.note),
+      enabled: true,
+      created_at: new Date().toISOString(),
+    }
+
+    const err = applyStaticRoute(route)
+    if (err) {
+      return res.status(500).json({ message: `Gagal memasang route di kernel: ${err}` })
+    }
+
+    routes.push(route)
+    writeJSON(STATIC_ROUTES_FILE, routes)
+    audit.record('vpn.route.add', { subnet, gateway, gateway_type: gatewayType }, req)
+    res.status(201).json({ message: 'Static route ditambahkan.', route })
+  },
+)
+
+// PUT — aktif/nonaktif route tanpa menghapus.
+router.put(
+  '/routes/:id/toggle',
+  param('id').isString().matches(/^[a-f0-9]{16}$/),
+  body('enabled').isBoolean(),
+  (req, res) => {
+    if (!handleValidation(req, res)) return
+    const routes = readStaticRoutes()
+    const r = routes.find((x) => x.id === req.params.id)
+    if (!r) return res.status(404).json({ message: 'Route tidak ditemukan.' })
+
+    const enabled = req.body.enabled === true || req.body.enabled === 'true'
+    r.enabled = enabled
+    if (enabled) {
+      const err = applyStaticRoute(r)
+      if (err) return res.status(500).json({ message: `Gagal memasang route: ${err}` })
+    } else {
+      removeStaticRouteFromKernel(r)
+    }
+    writeJSON(STATIC_ROUTES_FILE, routes)
+    audit.record('vpn.route.toggle', { subnet: r.subnet, enabled }, req)
+    res.json({ message: enabled ? 'Route diaktifkan.' : 'Route dinonaktifkan.', route: r })
+  },
+)
+
+// DELETE — hapus static route.
+router.delete(
+  '/routes/:id',
+  param('id').isString().matches(/^[a-f0-9]{16}$/),
+  (req, res) => {
+    if (!handleValidation(req, res)) return
+    const routes = readStaticRoutes()
+    const idx = routes.findIndex((x) => x.id === req.params.id)
+    if (idx === -1) return res.status(404).json({ message: 'Route tidak ditemukan.' })
+    const [removed] = routes.splice(idx, 1)
+    removeStaticRouteFromKernel(removed)
+    writeJSON(STATIC_ROUTES_FILE, routes)
+    audit.record('vpn.route.delete', { subnet: removed.subnet }, req)
+    res.json({ message: 'Static route dihapus.', subnet: removed.subnet })
+  },
+)
 
 module.exports = router
 // Ekspos builder agar endpoint provisioning (server-to-server) bisa pakai ulang.

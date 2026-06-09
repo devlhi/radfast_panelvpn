@@ -406,6 +406,72 @@
       </article>
     </div>
 
+    <!-- ═══ Tab: Static Route ═══ -->
+    <div v-if="tab === 'routes'" class="rf-section">
+      <article class="rf-card rf-section-tool">
+        <div class="rf-section-tool-left">
+          <div class="rf-key-meta">
+            Routing manual subnet ONT lewat tunnel VPN — agar server GenieACS bisa ping / akses
+            perangkat di belakang router pelanggan.
+          </div>
+        </div>
+        <div class="rf-section-tool-right">
+          <button @click="openAddRouteModal" class="btn-primary">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            Add Route
+          </button>
+        </div>
+      </article>
+
+      <article class="rf-card">
+        <div class="rf-table-wrap">
+          <table class="rf-table">
+            <thead>
+              <tr>
+                <th>Subnet Tujuan (ONT)</th>
+                <th>Gateway VPN</th>
+                <th>Catatan</th>
+                <th>Status</th>
+                <th style="text-align:right">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="staticRoutes.length === 0">
+                <td colspan="5">
+                  <div class="rf-empty">
+                    <div class="rf-empty-ic">
+                      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="19" r="3"/><circle cx="18" cy="5" r="3"/><path d="M6 16V9a4 4 0 0 1 4-4h4"/><path d="M18 8v7a4 4 0 0 1-4 4h-4"/></svg>
+                    </div>
+                    <p class="rf-empty-title">Belum ada static route</p>
+                    <p class="rf-empty-sub">Daftarkan subnet ONT (mis. 192.168.1.0/24) via IP VPN MikroTik agar GenieACS bisa menjangkaunya.</p>
+                  </div>
+                </td>
+              </tr>
+              <tr v-for="r in staticRoutes" :key="r.id">
+                <td><code class="rf-pass" style="color:var(--info)">{{ r.subnet }}</code></td>
+                <td>
+                  <code class="rf-pass">{{ r.gateway }}</code>
+                  <span class="rf-cell-sub">{{ r.gateway_type === 'dev' ? '(interface)' : '(via)' }}</span>
+                </td>
+                <td><span class="rf-cell-sub">{{ r.note || '—' }}</span></td>
+                <td>
+                  <span v-if="r.enabled === false" class="badge badge-muted">Nonaktif</span>
+                  <span v-else-if="r.active === false" class="badge badge-warning" title="Belum terpasang di kernel">Pending</span>
+                  <span v-else class="badge badge-success">Aktif</span>
+                </td>
+                <td style="text-align:right">
+                  <button class="btn-ghost" :disabled="togglingRoute === r.id" @click="toggleRoute(r)">
+                    {{ r.enabled === false ? 'Aktifkan' : 'Nonaktifkan' }}
+                  </button>
+                  <button class="btn-ghost rf-act-danger" @click="deleteRoute(r)">Hapus</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </article>
+    </div>
+
     <!-- ═══ Modal: Install L2TP ═══ -->
     <Transition name="modal">
       <div v-if="openInstallL2tp" class="rf-modal" @click.self="openInstallL2tp = false">
@@ -634,6 +700,72 @@
             <button @click="addWgPeer" :disabled="addLoading" class="btn-primary">
               <span v-if="addLoading" class="rf-spinner" style="width:14px;height:14px;border-width:2px"></span>
               {{ addLoading ? 'Creating…' : 'Create Peer' }}
+            </button>
+          </footer>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- ═══ Modal: Add Static Route ═══ -->
+    <Transition name="modal">
+      <div v-if="openAddRoute" class="rf-modal" @click.self="openAddRoute = false">
+        <div class="modal-box rf-modal-card">
+          <header class="rf-modal-head">
+            <div class="rf-modal-head-left">
+              <span class="rf-modal-icon" style="background:var(--info-soft);color:var(--info)">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="19" r="3"/><circle cx="18" cy="5" r="3"/><path d="M6 16V9a4 4 0 0 1 4-4h4"/><path d="M18 8v7a4 4 0 0 1-4 4h-4"/></svg>
+              </span>
+              <div>
+                <h3>Tambah Static Route</h3>
+                <p>Routing subnet ONT lewat tunnel VPN — agar GenieACS bisa menjangkau perangkat di belakang router.</p>
+              </div>
+            </div>
+            <button @click="openAddRoute = false" class="rf-modal-close">×</button>
+          </header>
+
+          <div class="rf-modal-body">
+            <div v-if="routeError" class="rf-alert rf-alert-error">{{ routeError }}</div>
+
+            <div class="rf-form-field">
+              <label>Subnet Tujuan (CIDR ONT) <span class="rf-req">*</span></label>
+              <input v-model="addRouteForm.subnet" type="text" placeholder="192.168.1.0/24" />
+              <p class="rf-help">Subnet LAN di belakang router pelanggan. Mis. <code>192.168.1.0/24</code>.</p>
+            </div>
+
+            <div class="rf-form-field">
+              <label>Tipe Gateway</label>
+              <select v-model="addRouteForm.gateway_type">
+                <option value="via">via IP VPN client</option>
+                <option value="dev">dev interface (mis. wg0)</option>
+              </select>
+            </div>
+
+            <div class="rf-form-field" v-if="addRouteForm.gateway_type === 'via'">
+              <label>Gateway VPN <span class="rf-req">*</span></label>
+              <input v-model="addRouteForm.gateway" type="text" placeholder="10.66.66.2" list="route-gw-options" />
+              <datalist id="route-gw-options">
+                <option v-for="o in gatewayOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
+              </datalist>
+              <p class="rf-help">IP VPN dari MikroTik / peer yang terhubung ke subnet ONT tersebut.</p>
+            </div>
+
+            <div class="rf-form-field" v-else>
+              <label>Interface <span class="rf-req">*</span></label>
+              <input v-model="addRouteForm.gateway" type="text" placeholder="wg0" />
+              <p class="rf-help">Nama interface VPN (mis. <code>wg0</code>). Cocok jika peer mengiklankan subnet via AllowedIPs.</p>
+            </div>
+
+            <div class="rf-form-field">
+              <label>Catatan</label>
+              <input v-model="addRouteForm.note" type="text" placeholder="Lokasi / nama ISP" />
+            </div>
+          </div>
+
+          <footer class="rf-modal-foot">
+            <button @click="openAddRoute = false" class="btn-secondary">Cancel</button>
+            <button @click="addRoute" :disabled="routeLoading" class="btn-primary">
+              <span v-if="routeLoading" class="rf-spinner" style="width:14px;height:14px;border-width:2px"></span>
+              {{ routeLoading ? 'Menambah…' : 'Tambah Route' }}
             </button>
           </footer>
         </div>
@@ -1000,6 +1132,7 @@ const l2tpConfig   = ref({})
 const wgPeers      = ref([])
 const wgConfig     = ref({})
 const instanceList = ref([])
+const staticRoutes = ref([])
 const loadingL2tp  = ref(true)
 const loadingWg    = ref(true)
 const addLoading   = ref(false)
@@ -1075,6 +1208,13 @@ const installWgForm   = ref({ port: 51820 })
 const addL2tpForm     = ref({ username: '', password: '', instance: '', note: '', ros_version: '7', lan_subnet: '', ont_ip: '', personal: false })
 const addWgForm       = ref({ name: '', instance: '', note: '', lan_subnet: '', ont_ip: '', personal: false })
 
+// ── Static Route ───────────────────────────────────────────────────────────
+const openAddRoute    = ref(false)
+const routeLoading    = ref(false)
+const routeError      = ref('')
+const togglingRoute   = ref('')   // id route yang sedang di-toggle
+const addRouteForm    = ref({ subnet: '', gateway: '', gateway_type: 'via', note: '' })
+
 // ── Edit VPN (L2TP user / WG peer) ─────────────────────────────────────────
 const openEditModal = ref(false)
 const editLoading    = ref(false)
@@ -1093,10 +1233,12 @@ const ontStatusFor = (type, key) => {
 
 const icoShield = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`
 const icoWg     = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4"/></svg>`
+const icoRoute  = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="19" r="3"/><circle cx="18" cy="5" r="3"/><path d="M6 16V9a4 4 0 0 1 4-4h4"/><path d="M18 8v7a4 4 0 0 1-4 4h-4"/></svg>`
 
 const tabs = computed(() => [
   { id: 'l2tp',      label: 'L2TP / IPsec', icon: icoShield, count: l2tpUsers.value.length },
   { id: 'wireguard', label: 'WireGuard',    icon: icoWg,     count: wgPeers.value.length },
+  { id: 'routes',    label: 'Static Route', icon: icoRoute,  count: staticRoutes.value.length },
 ])
 
 const wgPrefix = computed(() => {
@@ -1110,7 +1252,7 @@ const wgNextIpPreview = computed(() => {
 
 async function fetchAll() {
   // allSettled: satu request gagal tidak menghalangi yang lain
-  const [healthRes, statusRes, l2tpRes, l2tpCfgRes, wgRes, wgCfgRes, instRes, ontRes] = await Promise.allSettled([
+  const [healthRes, statusRes, l2tpRes, l2tpCfgRes, wgRes, wgCfgRes, instRes, ontRes, routesRes] = await Promise.allSettled([
     axios.get('/api/health'),           // no auth — untuk server_ip
     axios.get('/api/vpn/status'),
     axios.get('/api/vpn/l2tp/users'),
@@ -1119,6 +1261,7 @@ async function fetchAll() {
     axios.get('/api/vpn/wireguard/config'),
     axios.get('/api/instances'),
     axios.get('/api/vpn/ont-status'),
+    axios.get('/api/vpn/routes'),
   ])
   // server_ip dari health (no auth), sisanya dari status
   if (healthRes.status  === 'fulfilled') status.value.server_ip = healthRes.value.data.server_ip
@@ -1131,6 +1274,7 @@ async function fetchAll() {
   if (wgCfgRes.status   === 'fulfilled') wgConfig.value     = wgCfgRes.value.data
   if (instRes.status    === 'fulfilled') instanceList.value  = instRes.value.data
   if (ontRes.status     === 'fulfilled') ontStatus.value     = ontRes.value.data
+  if (routesRes.status  === 'fulfilled') staticRoutes.value  = routesRes.value.data.routes || []
 
   loadingL2tp.value = false
   loadingWg.value   = false
@@ -1211,6 +1355,61 @@ async function deleteWgPeer(name) {
   if (!confirm(`Hapus WireGuard peer "${name}"?`)) return
   try { await axios.delete(`/api/vpn/wireguard/peers/${name}`); await fetchAll() }
   catch (e) { alert(e.response?.data?.message || 'Gagal hapus') }
+}
+
+// ── Static Route ───────────────────────────────────────────────────────────
+// Saran gateway: IP VPN dari peer WireGuard + user L2TP yang punya static IP.
+const gatewayOptions = computed(() => {
+  const opts = []
+  for (const p of wgPeers.value) {
+    if (p.peer_ip) opts.push({ value: p.peer_ip, label: `${p.peer_ip} — WG: ${p.name}` })
+  }
+  for (const u of l2tpUsers.value) {
+    if (u.vpn_ip) opts.push({ value: u.vpn_ip, label: `${u.vpn_ip} — L2TP: ${u.username}` })
+  }
+  return opts
+})
+
+function openAddRouteModal() {
+  routeError.value = ''
+  addRouteForm.value = { subnet: '', gateway: '', gateway_type: 'via', note: '' }
+  openAddRoute.value = true
+}
+
+async function addRoute() {
+  routeError.value = ''
+  const f = addRouteForm.value
+  if (!f.subnet) { routeError.value = 'Subnet tujuan wajib diisi (mis. 192.168.1.0/24).'; return }
+  if (!f.gateway) { routeError.value = f.gateway_type === 'dev' ? 'Interface wajib diisi (mis. wg0).' : 'Gateway IP VPN wajib diisi.'; return }
+  routeLoading.value = true
+  try {
+    await axios.post('/api/vpn/routes', {
+      subnet: f.subnet.trim(),
+      gateway: f.gateway.trim(),
+      gateway_type: f.gateway_type,
+      note: f.note || '',
+    })
+    openAddRoute.value = false
+    await fetchAll()
+    showToast('✓ Static route ditambahkan')
+  } catch (e) { routeError.value = e.response?.data?.message || 'Gagal menambah route.' }
+  finally { routeLoading.value = false }
+}
+
+async function toggleRoute(route) {
+  togglingRoute.value = route.id
+  try {
+    await axios.put(`/api/vpn/routes/${route.id}/toggle`, { enabled: route.enabled === false })
+    await fetchAll()
+    showToast(route.enabled === false ? '✓ Route diaktifkan' : '✓ Route dinonaktifkan')
+  } catch (e) { alert(e.response?.data?.message || 'Gagal mengubah route') }
+  finally { togglingRoute.value = '' }
+}
+
+async function deleteRoute(route) {
+  if (!confirm(`Hapus static route ke ${route.subnet}?`)) return
+  try { await axios.delete(`/api/vpn/routes/${route.id}`); await fetchAll(); showToast('✓ Route dihapus') }
+  catch (e) { alert(e.response?.data?.message || 'Gagal hapus route') }
 }
 
 // ── Edit VPN (L2TP user / WG peer) ─────────────────────────────────────────

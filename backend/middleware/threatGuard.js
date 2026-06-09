@@ -37,9 +37,17 @@ module.exports = function threatGuard(req, res, next) {
   // Step 2: inspect (cheap regex pass)
   const threat = detector.inspect(req)
 
+  // Direct VPS IP access is useful telemetry, but many admins legitimately
+  // open the panel by IP:port. Do not let that tag alone accumulate into a
+  // ban; only feed the blocker with the score from actual exploit indicators.
+  const tags = threat.tags || []
+  const blockScore = tags.includes('direct-vps-ip') ? Math.max(0, threat.score - 20) : threat.score
+
   // Step 3: log + feed scorer
-  if (threat.score >= 20 || (threat.tags && threat.tags.length > 0)) {
-    const decision = blocker.feed(ip, threat.score, threat.tags)
+  if (threat.score >= 20 || tags.length > 0) {
+    const decision = blockScore > 0
+      ? blocker.feed(ip, blockScore, tags.filter(t => t !== 'direct-vps-ip'))
+      : { action: 'allow' }
 
     if (decision.action === 'ban') {
       secLog.record(req, threat, {

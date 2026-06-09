@@ -32,6 +32,13 @@
           </svg>
           Refresh
         </button>
+        <button @click="restartMultiProxy" class="btn-secondary" :disabled="proxyBusy"
+          title="Restart genieacs-multi-proxy (refresh routing port semua instance)">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" :class="{ 'rf-rot': proxyBusy }">
+            <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+          </svg>
+          {{ proxyBusy ? 'Restarting…' : 'Restart Proxy' }}
+        </button>
         <button @click="openAdd = true" class="btn-primary">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           New Instance
@@ -119,6 +126,12 @@
                     <svg v-if="actionLoading !== inst.name" width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
                     <span v-else class="rf-mini-spin"></span>
                     Stop
+                  </button>
+                  <button v-if="inst.active" @click="restartInstance(inst.name)" :disabled="actionLoading === inst.name"
+                    class="rf-act rf-act-info" title="Restart">
+                    <svg v-if="actionLoading !== inst.name" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                    <span v-else class="rf-mini-spin"></span>
+                    Restart
                   </button>
                   <button @click="confirmDelete(inst.name)" :disabled="actionLoading === inst.name"
                     class="rf-act rf-act-danger" title="Delete">
@@ -269,6 +282,9 @@ const deleteTarget = ref('')
 const search    = ref('')
 const form      = ref({ name: '' })
 
+// Restart multi-proxy global (tombol terpisah di header)
+const proxyBusy = ref(false)
+
 // ── Pagination ─────────────────────────────────────────────────────────────
 const page     = ref(1)
 const pageSize = ref(10)
@@ -389,6 +405,22 @@ async function stopInstance(name) {
   try { await axios.post(`/api/instances/${name}/stop`); await fetchInstances() }
   catch (e) { alert(e.response?.data?.message || 'Gagal stop') }
   finally { actionLoading.value = '' }
+}
+
+async function restartInstance(name) {
+  actionLoading.value = name
+  try { await axios.post(`/api/instances/${name}/restart`); await fetchInstances() }
+  catch (e) { alert(e.response?.data?.message || 'Gagal restart') }
+  finally { actionLoading.value = '' }
+}
+
+async function restartMultiProxy() {
+  proxyBusy.value = true
+  try {
+    const res = await axios.post('/api/instances/multi-proxy/restart')
+    alert(res.data?.message || 'Multi-proxy di-restart.')
+  } catch (e) { alert(e.response?.data?.message || 'Gagal restart multi-proxy') }
+  finally { proxyBusy.value = false }
 }
 
 function confirmDelete(name) { deleteTarget.value = name }
@@ -527,6 +559,8 @@ onMounted(fetchInstances)
 .rf-act-success:hover:not(:disabled) { background: rgba(26,188,156,.2); }
 .rf-act-warning { background: var(--warning-soft); color: var(--warning); border-color: rgba(245,184,41,.22); }
 .rf-act-warning:hover:not(:disabled) { background: rgba(245,184,41,.2); }
+.rf-act-info { background: var(--info-soft); color: var(--info); border-color: rgba(59,158,255,.22); }
+.rf-act-info:hover:not(:disabled) { background: rgba(59,158,255,.2); }
 .rf-act-danger { background: var(--danger-soft); color: var(--danger); border-color: rgba(255,94,94,.22); padding: 6px 8px; }
 .rf-act-danger:hover:not(:disabled) { background: rgba(255,94,94,.2); }
 

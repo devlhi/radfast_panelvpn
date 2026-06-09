@@ -277,7 +277,9 @@ function makeAction(action) {
         try { await runCmd('systemctl', [action, `genieacs-${name}-${svc}`], { timeout: 60_000 }) }
         catch (e) { failed.push({ svc, error: (e.stderr || e.message || '').slice(-300) }) }
       }
-      if (action === 'start') {
+      // Multi-proxy perlu di-restart saat start/restart agar routing port
+      // instance ter-refresh (registry/route table di-baca ulang).
+      if (action === 'start' || action === 'restart') {
         try { await runCmd('systemctl', ['restart', 'genieacs-multi-proxy'], { timeout: 60_000 }) }
         catch (e) { failed.push({ svc: 'multi-proxy', error: (e.stderr || e.message || '').slice(-300) }) }
       }
@@ -291,8 +293,32 @@ function makeAction(action) {
   }
 }
 
+// POST /api/instances/multi-proxy/restart — restart hanya genieacs-multi-proxy.
+// Berguna kalau setelah edit registry/port routing terlihat tidak update.
+router.post('/multi-proxy/restart', async (req, res, next) => {
+  try {
+    if (isWin) {
+      audit.record('instance.multi_proxy.restart.dev', {}, req)
+      return res.json({ message: 'multi-proxy restart (Windows dev mode).' })
+    }
+    await runCmd('systemctl', ['restart', 'genieacs-multi-proxy'], { timeout: 60_000 })
+    audit.record('instance.multi_proxy.restart', {}, req)
+    res.json({ message: 'genieacs-multi-proxy berhasil di-restart.' })
+  } catch (e) {
+    if (!e.status && (e.stderr || e.stdout)) {
+      e.status = 500
+      e.message = `Restart multi-proxy gagal: ${(e.stderr || e.stdout || '').trim().slice(-500)}`
+    }
+    next(e)
+  }
+})
+
+// CATATAN: route ":name" HARUS didefinisikan SETELAH "/multi-proxy/restart"
+// supaya request /multi-proxy/restart tidak ke-shadow oleh ":name" (string
+// "multi-proxy" lolos regex param name).
 router.post('/:name/start', param('name').matches(/^[a-z][a-z0-9_-]{0,62}$/), makeAction('start'))
 router.post('/:name/stop', param('name').matches(/^[a-z][a-z0-9_-]{0,62}$/), makeAction('stop'))
+router.post('/:name/restart', param('name').matches(/^[a-z][a-z0-9_-]{0,62}$/), makeAction('restart'))
 
 // DELETE /api/instances/:name. Linux delegates to remove-instance.sh.
 router.delete(

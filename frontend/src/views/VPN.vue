@@ -460,6 +460,7 @@
                   <span v-else class="badge badge-success">Aktif</span>
                 </td>
                 <td style="text-align:right">
+                  <button class="btn-ghost" @click="pingRouteGateway(r)">Ping GW</button>
                   <button class="btn-ghost" :disabled="togglingRoute === r.id" @click="toggleRoute(r)">
                     {{ r.enabled === false ? 'Aktifkan' : 'Nonaktifkan' }}
                   </button>
@@ -469,6 +470,37 @@
             </tbody>
           </table>
         </div>
+      </article>
+
+      <article class="rf-card rf-terminal-card">
+        <div class="rf-terminal-head">
+          <div>
+            <h3>Ping Check & Terminal Diagnostik</h3>
+            <p>Tes ping, route table, dan status WireGuard langsung dari server VPN.</p>
+          </div>
+          <button class="btn-secondary" :disabled="terminalLoading" @click="runTerminalCommand">
+            <span v-if="terminalLoading" class="rf-spinner" style="width:14px;height:14px;border-width:2px"></span>
+            Run
+          </button>
+        </div>
+        <div class="rf-form-row">
+          <div class="rf-form-field">
+            <label>Command</label>
+            <select v-model="terminalForm.command">
+              <option value="ping">ping target</option>
+              <option value="tracepath">tracepath target</option>
+              <option value="route">ip route show</option>
+              <option value="wg">wg show</option>
+              <option value="wg-peer">wg show peer by VPN IP</option>
+              <option value="ip-neigh">ip neigh show</option>
+            </select>
+          </div>
+          <div class="rf-form-field">
+            <label>Target IP</label>
+            <input v-model="terminalForm.target" type="text" placeholder="10.130.130.1 / 10.8.1.2" :disabled="['route','wg','ip-neigh'].includes(terminalForm.command)" />
+          </div>
+        </div>
+        <pre class="rf-terminal-output">{{ terminalOutput || 'Output command akan tampil di sini…' }}</pre>
       </article>
     </div>
 
@@ -1214,6 +1246,9 @@ const routeLoading    = ref(false)
 const routeError      = ref('')
 const togglingRoute   = ref('')   // id route yang sedang di-toggle
 const addRouteForm    = ref({ subnet: '', gateway: '', gateway_type: 'via', note: '' })
+const terminalLoading = ref(false)
+const terminalOutput  = ref('')
+const terminalForm    = ref({ command: 'ping', target: '' })
 
 // ── Edit VPN (L2TP user / WG peer) ─────────────────────────────────────────
 const openEditModal = ref(false)
@@ -1410,6 +1445,34 @@ async function deleteRoute(route) {
   if (!confirm(`Hapus static route ke ${route.subnet}?`)) return
   try { await axios.delete(`/api/vpn/routes/${route.id}`); await fetchAll(); showToast('✓ Route dihapus') }
   catch (e) { alert(e.response?.data?.message || 'Gagal hapus route') }
+}
+
+async function runTerminalCommand() {
+  terminalLoading.value = true
+  terminalOutput.value = 'Menjalankan command…'
+  try {
+    const payload = { ...terminalForm.value }
+    const { data } = await axios.post('/api/vpn/terminal', payload)
+    terminalOutput.value = data.output || (data.ok ? 'OK' : 'Tidak ada output.')
+  } catch (e) {
+    terminalOutput.value = e.response?.data?.message || 'Command gagal.'
+  } finally {
+    terminalLoading.value = false
+  }
+}
+
+async function pingRouteGateway(route) {
+  terminalForm.value = { command: 'ping', target: route.gateway }
+  terminalLoading.value = true
+  terminalOutput.value = `Ping ${route.gateway} dari server VPN…`
+  try {
+    const { data } = await axios.post('/api/vpn/terminal', { command: 'ping', target: route.gateway })
+    terminalOutput.value = data.output || (data.ok ? 'OK' : 'Tidak ada output.')
+  } catch (e) {
+    terminalOutput.value = e.response?.data?.message || 'Ping gagal.'
+  } finally {
+    terminalLoading.value = false
+  }
 }
 
 // ── Edit VPN (L2TP user / WG peer) ─────────────────────────────────────────
@@ -1955,6 +2018,22 @@ onUnmounted(() => {
   background: var(--success-soft);
   border-color: rgba(26,188,156,.22);
   color: var(--success);
+}
+
+.rf-terminal-card { margin-top: 16px; }
+.rf-terminal-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  margin-bottom: 14px;
+}
+.rf-terminal-head h3 { margin: 0 0 4px; font-size: 15px; color: var(--text-primary); }
+.rf-terminal-head p { margin: 0; font-size: 12px; color: var(--text-muted); }
+.rf-terminal-output {
+  min-height: 170px; max-height: 360px; overflow: auto;
+  margin: 12px 0 0; padding: 14px;
+  border-radius: 12px; border: 1px solid var(--border);
+  background: #050711; color: #dbeafe;
+  font: 12px/1.5 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
 }
 
 .rf-form-field { display: flex; flex-direction: column; gap: 6px; }

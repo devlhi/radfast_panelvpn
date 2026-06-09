@@ -1937,6 +1937,42 @@ function readStaticRoutes() {
   return Array.isArray(data) ? data : []
 }
 
+function findWgPeerByIp(ip) {
+  const peers = fs.existsSync(WG_PEERS_FILE) ? (readJSON(WG_PEERS_FILE) || []) : []
+  return Array.isArray(peers) ? peers.find((p) => p.peer_ip === ip && p.pubkey) : null
+}
+
+function staticRouteSubnetsForWgPeer(peerIp, extraSubnet = null) {
+  const subnets = new Set()
+  if (extraSubnet) subnets.add(extraSubnet)
+  for (const r of readStaticRoutes()) {
+    if (r.enabled === false) continue
+    if (r.gateway_type === 'via' && r.gateway === peerIp && r.subnet) subnets.add(r.subnet)
+  }
+  return [...subnets]
+}
+
+function syncWgPeerAllowedIPs(peerIp, extraSubnet = null) {
+  if (!isLinux || !isValidIPv4(peerIp)) return null
+  const peer = findWgPeerByIp(peerIp)
+  if (!peer) return null
+  const allowed = [`${peer.peer_ip}/32`]
+  if (peer.lan_subnet) allowed.push(peer.lan_subnet)
+  allowed.push(...staticRouteSubnetsForWgPeer(peerIp, extraSubnet))
+  const uniqueAllowed = [...new Set(allowed)].join(',')
+  try {
+    runCmdSync('wg', ['set', 'wg0', 'peer', peer.pubkey, 'allowed-ips', uniqueAllowed])
+    return null
+  } catch (e) {
+    return (e.stderr || e.message || 'gagal update WireGuard AllowedIPs').toString().trim().slice(-200)
+  }
+}
+
+function syncWgAllowedIPsForRoute(route, extraSubnet = null) {
+  if (!route || route.gateway_type !== 'via') return null
+  return syncWgPeerAllowedIPs(route.gateway, extraSubnet)
+}
+
 /**
  * Pasang/hapus satu route lewat `ip route`. Idempoten.
  * gatewayType: 'via' (IP gateway) atau 'dev' (interface, mis. wg0).
@@ -1944,11 +1980,15 @@ function readStaticRoutes() {
  */
 function applyStaticRoute(route) {
   if (!isLinux) return null
+  const wgErr = syncWgAllowedIPsForRoute(route, route.subnet)
+  if (wgErr) return wgErr
   try {
     if (route.gateway_type === 'dev') {
       runCmdSync('ip', ['route', 'replace', route.subnet, 'dev', route.gateway])
     } else {
-      runCmdSync('ip', ['route', 'replace', route.subnet, 'via', route.gateway])
+      const wgPeer = findWgPeerByIp(route.gateway)
+      if (wgPeer) runCmdSync('ip', ['route', 'replace', route.subnet, 'dev', 'wg0'])
+      else runCmdSync('ip', ['route', 'replace', route.subnet, 'via', route.gateway])
     }
     return null
   } catch (e) {
@@ -1959,6 +1999,7 @@ function applyStaticRoute(route) {
 function removeStaticRouteFromKernel(route) {
   if (!isLinux) return
   try { runCmdSync('ip', ['route', 'del', route.subnet]) } catch {}
+  syncWgAllowedIPsForRoute(route)
 }
 
 /**
@@ -1989,6 +2030,69 @@ router.get('/routes', (req, res) => {
   }))
   res.json({ routes: list, linux: isLinux })
 })
+
+router.post(
+  '/routes/ping',
+  body('ip').isIP(4),
+  body('count').optional().isInt({ min: 1, max: 5 }),
+  (req, res) => {
+    if (!handleValidation(req, res)) return
+    const ip = req.body.ip
+    const count = String(parseInt(req.body.count || 3, 10))
+    audit.record('vpn.route.ping', { ip, count }, req)
+    if (!isLinux) return res.json({ ok: false, output: 'Ping hanya tersedia di server Linux.' })
+    try {
+      const output = runCmdSync('ping', ['-c', count, '-W', '2', '-n', ip], { timeout: 12000 })
+      res.json({ ok: true, output })
+    } catch (e) {
+      const output = `${e.stdout || ''}${e.stderr || e.message || ''}`.trim()
+      res.json({ ok: false, output: output || 'Ping gagal.' })
+    }
+  },
+)
+
+router.post(
+  '/terminal',
+  body('command').isIn(['ping', 'tracepath', 'route', 'wg', 'wg-peer', 'ip-neigh']),
+  body('target').optional({ nullable: true }).isString().isLength({ max: 64 }),
+  (req, res) => {
+    if (!handleValidation(req, res)) return
+    if (!isLinux) return res.json({ ok: false, output: 'Terminal diagnostik hanya tersedia di server Linux.' })
+
+    const command = req.body.command
+    const target = String(req.body.target || '').trim()
+    let file = ''
+    let args = []
+
+    if (command === 'ping') {
+      if (!isValidIPv4(target)) return res.status(400).json({ message: 'Target ping harus IPv4.' })
+      file = 'ping'; args = ['-c', '4', '-W', '2', '-n', target]
+    } else if (command === 'tracepath') {
+      if (!isValidIPv4(target)) return res.status(400).json({ message: 'Target tracepath harus IPv4.' })
+      file = 'tracepath'; args = ['-n', target]
+    } else if (command === 'route') {
+      file = 'ip'; args = ['route', 'show']
+    } else if (command === 'wg') {
+      file = 'wg'; args = ['show']
+    } else if (command === 'wg-peer') {
+      if (!isValidIPv4(target)) return res.status(400).json({ message: 'Target harus IP peer WireGuard.' })
+      const peer = findWgPeerByIp(target)
+      if (!peer) return res.status(404).json({ message: 'Peer WireGuard dengan IP itu tidak ditemukan.' })
+      file = 'wg'; args = ['show', 'wg0', 'peer', peer.pubkey]
+    } else if (command === 'ip-neigh') {
+      file = 'ip'; args = ['neigh', 'show']
+    }
+
+    audit.record('vpn.terminal', { command, target }, req)
+    try {
+      const output = runCmdSync(file, args, { timeout: 15000 })
+      res.json({ ok: true, output })
+    } catch (e) {
+      const output = `${e.stdout || ''}${e.stderr || e.message || ''}`.trim()
+      res.json({ ok: false, output: output || 'Command gagal.' })
+    }
+  },
+)
 
 // POST — tambah static route baru.
 router.post(
@@ -2061,10 +2165,12 @@ router.put(
     if (enabled) {
       const err = applyStaticRoute(r)
       if (err) return res.status(500).json({ message: `Gagal memasang route: ${err}` })
+      writeJSON(STATIC_ROUTES_FILE, routes)
     } else {
+      // Tulis JSON dulu supaya sync AllowedIPs membaca state terbaru (route sudah nonaktif).
+      writeJSON(STATIC_ROUTES_FILE, routes)
       removeStaticRouteFromKernel(r)
     }
-    writeJSON(STATIC_ROUTES_FILE, routes)
     audit.record('vpn.route.toggle', { subnet: r.subnet, enabled }, req)
     res.json({ message: enabled ? 'Route diaktifkan.' : 'Route dinonaktifkan.', route: r })
   },
@@ -2080,8 +2186,9 @@ router.delete(
     const idx = routes.findIndex((x) => x.id === req.params.id)
     if (idx === -1) return res.status(404).json({ message: 'Route tidak ditemukan.' })
     const [removed] = routes.splice(idx, 1)
-    removeStaticRouteFromKernel(removed)
+    // Tulis JSON dulu supaya sync AllowedIPs WG tidak membaca route yang dihapus.
     writeJSON(STATIC_ROUTES_FILE, routes)
+    removeStaticRouteFromKernel(removed)
     audit.record('vpn.route.delete', { subnet: removed.subnet }, req)
     res.json({ message: 'Static route dihapus.', subnet: removed.subnet })
   },

@@ -14,14 +14,14 @@ module.exports = {
       cwd: path.join(ROOT, 'backend'),
 
       // ── Runtime ──────────────────────────────────────────────────────────
-      node_args: '--max-old-space-size=256',
+      node_args: '--max-old-space-size=512',
       instances: 1,           // single instance (stateful token store in-memory)
       exec_mode: 'fork',
 
-      // ── Restart policy ───────────────────────────────────────────────────
+      // ── Restart policy ────────────────────────────────────────────────────
       autorestart: true,
       watch: false,
-      max_memory_restart: '300M',
+      max_memory_restart: '600M',
       restart_delay: 2000,
       max_restarts: 10,
       min_uptime: '10s',

@@ -160,8 +160,14 @@ function runInteractive(file, args, input = '', timeout = 600_000) {
       finish(new Error(`Command timeout: ${file} ${args.join(' ')}`))
     }, timeout)
 
-    child.stdout.on('data', d => { stdout += d.toString() })
-    child.stderr.on('data', d => { stderr += d.toString() })
+    child.stdout.on('data', d => {
+      stdout += d.toString()
+      if (stdout.length > 64_000) stdout = stdout.slice(-32_000) // cap heap usage
+    })
+    child.stderr.on('data', d => {
+      stderr += d.toString()
+      if (stderr.length > 64_000) stderr = stderr.slice(-32_000)
+    })
     // Attach error handlers to ALL streams to prevent EPIPE crashing the process
     child.stdout.on('error', () => {})
     child.stderr.on('error', () => {})
@@ -246,7 +252,23 @@ router.post(
         if (!fs.existsSync(ACS_ADD_INSTANCE_SCRIPT)) {
           return res.status(500).json({ message: `Script add-instance tidak ditemukan: ${ACS_ADD_INSTANCE_SCRIPT}` })
         }
-        await runInteractive('bash', [ACS_ADD_INSTANCE_SCRIPT, name], 'Y\n', 170_000)
+        audit.recordSync('instance.create.start', { name, script: ACS_ADD_INSTANCE_SCRIPT })
+        try {
+          const result = await runInteractive('bash', [ACS_ADD_INSTANCE_SCRIPT, name], 'Y\n', 170_000)
+          audit.recordSync('instance.create.script_done', {
+            name,
+            stdout_tail: (result.stdout || '').slice(-500),
+            stderr_tail: (result.stderr || '').slice(-500),
+          })
+        } catch (scriptErr) {
+          audit.recordSync('instance.create.script_failed', {
+            name,
+            msg: scriptErr.message,
+            stdout_tail: (scriptErr.stdout || '').slice(-500),
+            stderr_tail: (scriptErr.stderr || '').slice(-500),
+          })
+          throw scriptErr
+        }
         inst = readRegistry().find(i => i.name === name)
       }
 

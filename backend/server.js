@@ -13,6 +13,7 @@ const errors = require('./lib/errors')
 const auth = require('./middleware/auth')
 const csrf = require('./lib/csrf')
 const threatGuard = require('./middleware/threatGuard')
+const activityLogger = require('./middleware/activityLogger')
 const { apiLimiter, provisionLimiter } = require('./lib/limiters')
 
 const app = express()
@@ -113,7 +114,9 @@ app.use(csrf.verify)
 
 // ── Global API rate limiter ────────────────────────────────────────────────
 app.use('/api', apiLimiter)
-
+// ── Activity logger ─ catat SEMUA aksi mutasi (POST/PUT/PATCH/DELETE) ke audit
+// Dipasang setelah rate limiter; req.admin terisi saat res 'finish' dipanggil.
+app.use('/api', activityLogger)
 // ── Public auth routes ─────────────────────────────────────────────────────
 app.use('/api/auth', require('./routes/auth'))
 

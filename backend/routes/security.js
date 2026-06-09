@@ -122,8 +122,13 @@ router.get('/audit-file/:name', (req, res) => {
   if (!/^audit-\d{4}-\d{2}-\d{2}\.log$/.test(name)) {
     return res.status(400).json({ message: 'Nama file tidak valid.' })
   }
-  const full = path.join(config.auditLogDir, name)
-  if (!full.startsWith(config.auditLogDir)) {
+  // BUG FIX: config.auditLogDir bisa relatif (mis. './data/logs'). path.join
+  // membuang prefix './' sehingga full.startsWith(config.auditLogDir) selalu
+  // false → endpoint balas 400 dan Activity Log tampak kosong. Resolve ke
+  // absolut dulu supaya perbandingan path-traversal valid.
+  const baseDir = path.resolve(config.auditLogDir)
+  const full = path.resolve(baseDir, name)
+  if (!full.startsWith(baseDir)) {
     return res.status(400).json({ message: 'Path tidak valid.' })
   }
   if (!fs.existsSync(full)) return res.status(404).json({ message: 'File tidak ada.' })

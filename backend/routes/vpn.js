@@ -1258,10 +1258,26 @@ async function createWgPeer(opts) {
   cfg.next_ip = octet + 1
   writeJSON(WG_CFG_FILE, cfg)
 
+  // ── Listen-port + nama interface MikroTik unik per peer ──────────────────
+  // Sebelumnya semua peer pakai name="wg-radfast" & listen-port=13231 (sama),
+  // jadi kalau satu router punya >1 tunnel akan bentrok. Di sini kita deteksi
+  // port yang sudah dipakai peer lain lalu ambil port bebas berikutnya,
+  // dan beri nama interface unik berbasis nama peer.
+  const MT_PORT_BASE = 13231
+  const usedMtPorts = new Set(
+    peers.map(p => Number(p.mt_port)).filter(Number.isInteger),
+  )
+  let mtPort = MT_PORT_BASE
+  while (mtPort <= 65535 && usedMtPorts.has(mtPort)) mtPort++
+  if (mtPort > 65535) mtPort = MT_PORT_BASE // fallback (sangat tidak mungkin)
+  const mtIface = `wg-radfast-${name}`.slice(0, 60)
+
   const source = opts.source === 'api' ? 'api' : 'dashboard'
   const peer = {
     name, pubkey: pubKey, privkey: privKey,
     peer_ip: peerIP,
+    mt_port: mtPort,
+    mt_iface: mtIface,
     instance: opts.instance || '',
     note: safeNote(opts.note),
     ros_version: '7',
@@ -1568,7 +1584,32 @@ router.get(
     const serverPubkey = cfg.server_pubkey || 'SERVER_PUBKEY'
     const port = validatePort(cfg.port || 51820)
 
-    audit.record('vpn.wg.mikrotik_view', { name: peer.name }, req)
+    // ── Backfill mt_port / mt_iface untuk peer lama yg belum punya ──────────
+    // Peer yg dibuat sebelum versi ini tidak menyimpan listen-port unik.
+    // Pilih port bebas (tidak dipakai peer lain) lalu persist supaya konsisten.
+    let mtPort = Number(peer.mt_port)
+    let mtIface = peer.mt_iface
+    if (!Number.isInteger(mtPort) || mtPort < 1024 || mtPort > 65535 || !mtIface) {
+      const allPeers = readJSON(WG_PEERS_FILE)
+      const usedMtPorts = new Set(
+        allPeers
+          .filter(p => p.name !== peer.name)
+          .map(p => Number(p.mt_port))
+          .filter(Number.isInteger),
+      )
+      let candidate = 13231
+      while (candidate <= 65535 && usedMtPorts.has(candidate)) candidate++
+      if (candidate > 65535) candidate = 13231
+      mtPort = candidate
+      mtIface = mtIface || `wg-radfast-${peer.name}`.slice(0, 60)
+      const idx = allPeers.findIndex(p => p.name === peer.name)
+      if (idx !== -1) {
+        allPeers[idx] = { ...allPeers[idx], mt_port: mtPort, mt_iface: mtIface }
+        writeJSON(WG_PEERS_FILE, allPeers)
+      }
+    }
+
+    audit.record('vpn.wg.mikrotik_view', { name: peer.name, mt_iface: mtIface, mt_port: mtPort }, req)
 
     // allowed-address di sisi router = subnet VPN + (opsional) subnet ONT,
     // agar trafik dari/ke ONT diteruskan lewat tunnel.
@@ -1583,17 +1624,18 @@ router.get(
     // supaya ONT bisa balas (ONT tak punya route balik ke subnet VPN).
     const natRule = peer.lan_subnet
       ? `\n\n/ip firewall nat\nadd chain=srcnat action=masquerade src-address=${cfg.subnet} dst-address=${peer.lan_subnet} comment="RadFast ACS - akses ONT dari VPN"` +
-        `\n\n/ip firewall filter\nadd chain=forward action=accept in-interface="wg-radfast" comment="RadFast ACS - izinkan forward dari VPN"`
+        `\n\n/ip firewall filter\nadd chain=forward action=accept in-interface="${mtIface}" comment="RadFast ACS - izinkan forward dari VPN"`
       : ''
 
     const config = `# ── WireGuard RadFast VPN ──────────────────────────────
 # RouterOS 7.x — paste di terminal MikroTik
+# Interface: ${mtIface}  ·  Listen-port: ${mtPort}
 
 /interface wireguard
-add name="wg-radfast" private-key="${peer.privkey}" listen-port=13231
+add name="${mtIface}" private-key="${peer.privkey}" listen-port=${mtPort}
 
 /interface wireguard peers
-add interface="wg-radfast" \\
+add interface="${mtIface}" \\
     public-key="${serverPubkey}" \\
     endpoint-address=${serverIP} \\
     endpoint-port=${port} \\
@@ -1601,16 +1643,16 @@ add interface="wg-radfast" \\
     persistent-keepalive=25s
 
 /ip address
-add interface="wg-radfast" address="${peer.peer_ip}/24"
+add interface="${mtIface}" address="${peer.peer_ip}/24"
 
 /ip route
-add dst-address=${cfg.subnet} gateway="wg-radfast" comment="RadFast ACS"
+add dst-address=${cfg.subnet} gateway="${mtIface}" comment="RadFast ACS"
 ${lanRoute}${ontComment}${natRule}
 
 # Verifikasi:
 /interface wireguard peers print`
 
-    res.json({ config, server_ip: serverIP, peer_ip: peer.peer_ip, ros_version: '7', lan_subnet: peer.lan_subnet || null })
+    res.json({ config, server_ip: serverIP, peer_ip: peer.peer_ip, ros_version: '7', lan_subnet: peer.lan_subnet || null, mt_port: mtPort, mt_iface: mtIface })
   },
 )
 

@@ -415,10 +415,14 @@ async function restartInstance(name) {
 }
 
 async function restartMultiProxy() {
+  if (!confirm('Restart genieacs-multi-proxy?\nSemua koneksi ke instance ACS akan terputus sesaat.')) return
   proxyBusy.value = true
   try {
     const res = await axios.post('/api/instances/multi-proxy/restart')
     alert(res.data?.message || 'Multi-proxy di-restart.')
+    // Tunggu sebentar lalu refresh data instances
+    await new Promise(r => setTimeout(r, 2000))
+    await fetchInstances()
   } catch (e) { alert(e.response?.data?.message || 'Gagal restart multi-proxy') }
   finally { proxyBusy.value = false }
 }

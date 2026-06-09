@@ -299,16 +299,27 @@ router.post('/multi-proxy/restart', async (req, res, next) => {
   try {
     if (isWin) {
       audit.record('instance.multi_proxy.restart.dev', {}, req)
-      return res.json({ message: 'multi-proxy restart (Windows dev mode).' })
+      return res.json({ ok: true, message: 'multi-proxy restart (Windows dev mode).' })
     }
+
+    // Cek apakah service ada sebelum restart
+    let svcExists = false
+    try {
+      const out = await runCmd('systemctl', ['list-unit-files', 'genieacs-multi-proxy.service'], { timeout: 10_000 })
+      svcExists = out.stdout.includes('genieacs-multi-proxy.service')
+    } catch { /* ignore */ }
+
+    if (!svcExists) {
+      return res.status(404).json({ ok: false, message: 'Service genieacs-multi-proxy tidak ditemukan di VPS ini.' })
+    }
+
     await runCmd('systemctl', ['restart', 'genieacs-multi-proxy'], { timeout: 60_000 })
     audit.record('instance.multi_proxy.restart', {}, req)
-    res.json({ message: 'genieacs-multi-proxy berhasil di-restart.' })
+    res.json({ ok: true, message: 'genieacs-multi-proxy berhasil di-restart.' })
   } catch (e) {
-    if (!e.status && (e.stderr || e.stdout)) {
-      e.status = 500
-      e.message = `Restart multi-proxy gagal: ${(e.stderr || e.stdout || '').trim().slice(-500)}`
-    }
+    const detail = (e.stderr || e.stdout || '').trim().slice(-500)
+    e.status = 500
+    e.message = detail ? `Restart multi-proxy gagal: ${detail}` : 'Restart multi-proxy gagal (timeout atau service error).'
     next(e)
   }
 })

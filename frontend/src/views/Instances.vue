@@ -294,30 +294,43 @@ function restApiUrl(inst) {
 // ── Name validation ──────────────────────────────────────────────────────
 const isValidName = computed(() => /^[a-z][a-z0-9-]{0,30}$/.test(form.value.name))
 
-// ── Auto-preview: compute next free ports from existing instances ─────────
-function nextFreePort(field, base) {
-  if (!instances.value.length) return base
-  const used = new Set(instances.value.map(i => i[field]))
-  let p = base
-  while (used.has(p)) p++
-  return p
+// ── Auto-preview: backend hitung port bebas (cek juga port listening) ─────
+const preview = ref({ ui_port: '…', cwmp_port: '…', db: 'genieacs_…' })
+
+async function refreshPreview() {
+  const name = form.value.name.trim()
+  try {
+    const res = await axios.get('/api/instances/preview', {
+      params: name ? { name } : {},
+    })
+    preview.value = res.data
+  } catch (e) {
+    // Fallback: hitung lokal kalau endpoint preview gagal
+    const used = new Set(instances.value.map(i => i.ui_port).filter(Boolean))
+    const usedCwmp = new Set(instances.value.map(i => i.cwmp_port).filter(Boolean))
+    let ui = 3001
+    while (used.has(ui)) ui++
+    let cwmp = 7548
+    while (usedCwmp.has(cwmp)) cwmp++
+    const dbSafe = name.replace(/-/g, '_').replace(/[^a-z0-9_]/gi, '')
+    preview.value = { ui_port: ui, cwmp_port: cwmp, db: dbSafe ? `genieacs_${dbSafe}` : 'genieacs_…' }
+  }
 }
 
-const preview = computed(() => {
-  const name = form.value.name.replace(/-/g, '_').replace(/[^a-z0-9_]/gi, '')
-  return {
-    ui_port:   nextFreePort('ui_port',   3000),
-    cwmp_port: nextFreePort('cwmp_port', 7547),
-    db:        name ? `genieacs_${name}` : 'genieacs_…',
-  }
-})
-
-// Debounce so it doesn't flicker per keystroke
+// Debounce so we don't spam the API per keystroke
 let nameTimer = null
 function onNameInput() {
   clearTimeout(nameTimer)
-  nameTimer = setTimeout(() => {}, 200)
+  nameTimer = setTimeout(refreshPreview, 250)
 }
+
+// Refresh preview tiap modal dibuka
+watch(openAdd, (open) => {
+  if (open) {
+    form.value = { name: '' }
+    refreshPreview()
+  }
+})
 
 // ── Counts ───────────────────────────────────────────────────────────────
 const activeCount = computed(() => instances.value.filter(i => i.active).length)

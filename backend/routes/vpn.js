@@ -44,6 +44,19 @@ function getServerIP() {
   }
 }
 
+// Deteksi interface WAN default (untuk NAT/MASQUERADE). Jangan hardcode eth0 —
+// banyak VPS pakai ens3/enp1s0 sehingga wg-quick@wg0 gagal start kalau salah.
+function defaultNetIface() {
+  if (!isLinux) return 'eth0'
+  try {
+    // Output contoh: "default via 1.2.3.4 dev ens3 proto static"
+    const out = runCmdSync('ip', ['route', 'show', 'default'])
+    const m = out.match(/\bdev\s+([a-zA-Z0-9._-]+)/)
+    if (m && m[1]) return m[1]
+  } catch {}
+  return 'eth0'
+}
+
 function svcRunning(name) {
   if (!isLinux) return false
   // Systemd service names can contain '@' for template units (e.g. wg-quick@wg0)
@@ -980,8 +993,28 @@ router.post(
     const port = validatePort(req.body.port || 51820)
     const wgPool = wireguardPoolDefaults()
 
+    // Deteksi package manager (apt vs yum/dnf)
+    let pkgBin = 'apt-get'
+    let pkgArgs = ['install', '-y', 'wireguard']
     try {
-      await runCmd('apt-get', ['install', '-y', 'wireguard'], { timeout: 120_000 })
+      const osr = fs.readFileSync('/etc/os-release', 'utf8').toLowerCase()
+      if (osr.includes('centos') || osr.includes('rhel') || osr.includes('fedora') || osr.includes('rocky') || osr.includes('alma')) {
+        pkgBin = 'yum'
+        pkgArgs = ['install', '-y', 'wireguard-tools']
+      }
+    } catch {}
+
+    const env = { ...process.env, DEBIAN_FRONTEND: 'noninteractive' }
+    const iface = defaultNetIface()
+
+    try {
+      // ── Install package ───────────────────────────────────────────────
+      if (pkgBin === 'apt-get') {
+        try { await runCmd('apt-get', ['update'], { timeout: 120_000, env }) } catch {}
+      }
+      await runCmd(pkgBin, pkgArgs, { timeout: 180_000, env })
+
+      // ── Generate keys ────────────────────────────────────────────────
       fs.mkdirSync('/etc/wireguard', { recursive: true, mode: 0o700 })
 
       const priv = (await runCmd('wg', ['genkey'])).stdout.trim()
@@ -991,34 +1024,42 @@ router.post(
         let out = ''; let err = ''
         p.stdout.on('data', d => out += d)
         p.stderr.on('data', d => err += d)
-        p.on('close', code => code === 0 ? resolve(out.trim()) : reject(new Error(err)))
+        p.on('error', reject)
+        p.on('close', code => code === 0 ? resolve(out.trim()) : reject(new Error(err || `wg pubkey exit ${code}`)))
         p.stdin.end(priv + '\n')
       })
 
       fs.writeFileSync('/etc/wireguard/server_private.key', priv, { mode: 0o600 })
       fs.writeFileSync('/etc/wireguard/server_public.key',  pub,  { mode: 0o644 })
 
+      // ── Write wg0.conf (pakai iface WAN yang terdeteksi) ─────────────
       fs.writeFileSync('/etc/wireguard/wg0.conf', [
         '[Interface]',
         `Address = ${wgPool.server_vpn_ip}/24`,
         `ListenPort = ${port}`,
         `PrivateKey = ${priv}`,
-        'PostUp   = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE',
-        'PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE',
+        `PostUp   = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o ${iface} -j MASQUERADE`,
+        `PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o ${iface} -j MASQUERADE`,
       ].join('\n') + '\n', { mode: 0o600 })
 
+      // ── Enable IP forwarding ─────────────────────────────────────────
       try { fs.writeFileSync('/proc/sys/net/ipv4/ip_forward', '1') } catch {}
-      await runCmd('systemctl', ['enable', '--now', 'wg-quick@wg0'])
+      try { runCmdSync('sysctl', ['-w', 'net.ipv4.ip_forward=1']) } catch {}
+
+      // ── Start service ───────────────────────────────────────────────
+      await runCmd('systemctl', ['enable', '--now', 'wg-quick@wg0'], { timeout: 60_000 })
 
       writeJSON(WG_CFG_FILE, {
         port, server_ip: getServerIP(),
         server_pubkey: pub, ...wgPool,
       })
 
-      audit.record('vpn.wg.install', { port }, req)
-      res.json({ message: 'WireGuard berhasil diinstall.', server_pubkey: pub, port })
+      audit.record('vpn.wg.install', { port, iface }, req)
+      res.json({ message: 'WireGuard berhasil diinstall.', server_pubkey: pub, port, iface })
     } catch (e) {
-      res.status(500).json({ message: 'Install WireGuard gagal.' })
+      console.error('[vpn.wg.install] ERROR:', e.message, e.stderr || '')
+      const detail = (e.stderr || e.stdout || e.message || 'unknown error').toString().trim().slice(-400)
+      res.status(500).json({ message: `Install WireGuard gagal: ${detail}` })
     }
   },
 )

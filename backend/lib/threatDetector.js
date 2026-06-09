@@ -19,8 +19,10 @@ const PATTERNS = [
   { tag: 'sqli-tick', score: 15, re: /('|%27)\s*(or|and)\s*('|%27)?\s*\d/i },
 
   // ── XSS ───────────────────────────────────────────────────────────────
-  { tag: 'xss',       score: 30, re: /<\s*script\b|javascript:|on(error|load|click|mouseover)\s*=/i },
-  { tag: 'xss-svg',   score: 20, re: /<\s*(svg|iframe|embed|object)\b[^>]*on\w+\s*=/i },
+  { tag: 'xss',         score: 30, re: /<\s*script\b|javascript:|on(error|load|click|mouseover)\s*=/i },
+  { tag: 'xss-svg',     score: 20, re: /<\s*(svg|iframe|embed|object)\b[^>]*on\w+\s*=/i },
+  { tag: 'xss-encoded', score: 25, re: /(%3c|&lt;)\s*(script|svg|iframe|img|body)\b|%6a%61%76%61%73%63%72%69%70%74%3a|&#x?0*3c;/i },
+  { tag: 'xss-event',   score: 20, re: /\b(onabort|onanimationstart|onbeforeinput|onfocus|onmouseenter|onpointerover|ontoggle)\s*=/i },
 
   // ── Command injection ─────────────────────────────────────────────────
   { tag: 'cmdi',      score: 40, re: /(;|\||\|\||&&|\$\(|`)\s*(cat|wget|curl|nc|bash|sh|perl|python|powershell|cmd|whoami|id|uname|chmod|kill)\b/i },
@@ -31,6 +33,7 @@ const PATTERNS = [
 
   // ── SSRF / cloud metadata ─────────────────────────────────────────────
   { tag: 'ssrf',      score: 30, re: /\b(169\.254\.169\.254|metadata\.google\.internal|100\.100\.100\.200)\b/i },
+  { tag: 'local-net', score: 20, re: /\b(127\.0\.0\.1|localhost|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3})\b/i },
 
   // ── Server-side template / SSTI / log4shell ───────────────────────────
   { tag: 'log4shell', score: 50, re: /\$\{jndi:(?:ldap|rmi|dns|ldaps|http)s?:\/\//i },
@@ -93,9 +96,10 @@ function inspect(req) {
   const url   = (req.originalUrl || req.url || '').toString()
   const ua    = (req.headers?.['user-agent'] || '').toString()
   const ref   = (req.headers?.referer || req.headers?.referrer || '').toString()
+  const host  = (req.headers?.host || '').toString().split(':')[0]
   const body  = req.body ? flatten(req.body) : ''
   const query = req.query ? flatten(req.query) : ''
-  const haystack = `${url}\n${ua}\n${ref}\n${query}\n${body}`.slice(0, 16000)
+  const haystack = `${url}\n${ua}\n${ref}\n${host}\n${query}\n${body}`.slice(0, 16000)
 
   for (const p of PATTERNS) {
     if (p.re.test(haystack)) {
@@ -117,6 +121,12 @@ function inspect(req) {
     tags.add('no-ua'); score += 5
   } else if (ua.length > 400) {
     tags.add('long-ua'); score += 5
+  }
+
+  // Request langsung ke IP VPS (bukan domain panel) biasanya scanner / bot internet.
+  if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(host) || /^\[[0-9a-f:]+\]$/i.test(host) || /^[0-9a-f:]{3,}$/i.test(host)) {
+    tags.add('direct-vps-ip')
+    score += 20
   }
 
   // Method probing

@@ -483,6 +483,12 @@
               </div>
             </div>
             <div class="rf-form-field">
+              <label class="rf-switch-row">
+                <input type="checkbox" v-model="addL2tpForm.personal" />
+                <span>Mode Pribadi <span class="rf-form-hint-inline">VPN personal, tanpa instance/ONT</span></span>
+              </label>
+            </div>
+            <div class="rf-form-field" v-if="!addL2tpForm.personal">
               <label>GenieACS Instance <span class="rf-form-hint-inline">opsional</span></label>
               <select v-model="addL2tpForm.instance">
                 <option value="">— Pilih instance —</option>
@@ -497,7 +503,7 @@
               </select>
               <span class="rf-form-hint-inline">Script dial-in disesuaikan dengan versi ROS.</span>
             </div>
-            <div class="rf-form-row">
+            <div class="rf-form-row" v-if="!addL2tpForm.personal">
               <div class="rf-form-field">
                 <label>IP Block ONT <span class="rf-form-hint-inline">opsional</span></label>
                 <input v-model="addL2tpForm.lan_subnet" type="text" placeholder="192.168.100.0/24" />
@@ -591,13 +597,19 @@
               <input v-model="addWgForm.name" type="text" placeholder="mikrotik-cabang-surabaya" />
             </div>
             <div class="rf-form-field">
+              <label class="rf-switch-row">
+                <input type="checkbox" v-model="addWgForm.personal" />
+                <span>Mode Pribadi <span class="rf-form-hint-inline">VPN personal, tanpa instance/ONT</span></span>
+              </label>
+            </div>
+            <div class="rf-form-field" v-if="!addWgForm.personal">
               <label>GenieACS Instance <span class="rf-form-hint-inline">opsional</span></label>
               <select v-model="addWgForm.instance">
                 <option value="">— Pilih instance —</option>
                 <option v-for="inst in instanceList" :key="inst.name" :value="inst.name">{{ inst.name }}</option>
               </select>
             </div>
-            <div class="rf-form-row">
+            <div class="rf-form-row" v-if="!addWgForm.personal">
               <div class="rf-form-field">
                 <label>IP Block ONT <span class="rf-form-hint-inline">opsional</span></label>
                 <input v-model="addWgForm.lan_subnet" type="text" placeholder="192.168.100.0/24" />
@@ -1060,8 +1072,8 @@ let trafficTimer      = null
 
 const installL2tpForm = ref({ psk: '' })
 const installWgForm   = ref({ port: 51820 })
-const addL2tpForm     = ref({ username: '', password: '', instance: '', note: '', ros_version: '7', lan_subnet: '', ont_ip: '' })
-const addWgForm       = ref({ name: '', instance: '', note: '', lan_subnet: '', ont_ip: '' })
+const addL2tpForm     = ref({ username: '', password: '', instance: '', note: '', ros_version: '7', lan_subnet: '', ont_ip: '', personal: false })
+const addWgForm       = ref({ name: '', instance: '', note: '', lan_subnet: '', ont_ip: '', personal: false })
 
 // ── Edit VPN (L2TP user / WG peer) ─────────────────────────────────────────
 const openEditModal = ref(false)
@@ -1160,9 +1172,13 @@ async function addL2tpUser() {
   if (!addL2tpForm.value.password) addL2tpForm.value.password = genPass()
   addLoading.value = true
   try {
-    await axios.post('/api/vpn/l2tp/users', addL2tpForm.value)
+    const payload = { ...addL2tpForm.value }
+    // Mode pribadi: VPN personal tanpa kaitan instance/ONT.
+    if (payload.personal) { payload.instance = ''; payload.lan_subnet = ''; payload.ont_ip = '' }
+    delete payload.personal
+    await axios.post('/api/vpn/l2tp/users', payload)
     openAddL2tp.value = false
-    addL2tpForm.value = { username: '', password: '', instance: '', note: '', ros_version: '7', lan_subnet: '', ont_ip: '' }
+    addL2tpForm.value = { username: '', password: '', instance: '', note: '', ros_version: '7', lan_subnet: '', ont_ip: '', personal: false }
     await fetchAll()
   } catch (e) { addError.value = e.response?.data?.message || 'Gagal membuat user.' }
   finally { addLoading.value = false }
@@ -1179,9 +1195,13 @@ async function addWgPeer() {
   if (!addWgForm.value.name) { addError.value = 'Nama peer wajib diisi.'; return }
   addLoading.value = true
   try {
-    await axios.post('/api/vpn/wireguard/peers', addWgForm.value)
+    const payload = { ...addWgForm.value }
+    // Mode pribadi: VPN personal tanpa kaitan instance/ONT.
+    if (payload.personal) { payload.instance = ''; payload.lan_subnet = ''; payload.ont_ip = '' }
+    delete payload.personal
+    await axios.post('/api/vpn/wireguard/peers', payload)
     openAddWg.value = false
-    addWgForm.value = { name: '', instance: '', note: '', lan_subnet: '', ont_ip: '' }
+    addWgForm.value = { name: '', instance: '', note: '', lan_subnet: '', ont_ip: '', personal: false }
     await fetchAll()
   } catch (e) { addError.value = e.response?.data?.message || 'Gagal membuat peer.' }
   finally { addLoading.value = false }
@@ -1759,6 +1779,21 @@ onUnmounted(() => {
 }
 .rf-input-group input { flex: 1; }
 .rf-gen { padding: 0 12px; }
+
+/* Toggle "Mode Pribadi" — minimalist switch row dalam form modal */
+.rf-switch-row {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 8px 10px; border-radius: 8px;
+  background: var(--bg-soft, rgba(0,0,0,0.03));
+  cursor: pointer; user-select: none;
+  font-size: 12px; font-weight: 600;
+  color: var(--text-primary);
+}
+.rf-switch-row input[type="checkbox"] {
+  width: 14px; height: 14px; margin: 0; cursor: pointer;
+  accent-color: var(--accent, #4f46e5);
+}
+.rf-switch-row span { display: inline-flex; align-items: baseline; gap: 6px; }
 
 .rf-alert {
   display: flex; align-items: center; gap: 9px;

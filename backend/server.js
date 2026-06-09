@@ -141,11 +141,20 @@ app.use(errors.handler)
 
 // ── Crash safety nets ──────────────────────────────────────────────────────
 process.on('unhandledRejection', (reason) => {
-  audit.record('process.unhandled_rejection', { reason: String(reason).slice(0, 500) })
+  // Sync write so it lands on disk even if process exits soon after
+  audit.recordSync('process.unhandled_rejection', {
+    reason: String(reason).slice(0, 500),
+    stack: reason?.stack?.slice(0, 2000) || '',
+  })
   console.error('[unhandledRejection]', reason)
 })
 process.on('uncaughtException', (err) => {
-  audit.record('process.uncaught_exception', { msg: err.message })
+  // Sync write — process is about to die, async stream may not flush
+  audit.recordSync('process.uncaught_exception', {
+    msg: err.message,
+    code: err.code || '',
+    stack: err.stack?.slice(0, 2000) || '',
+  })
   console.error('[uncaughtException]', err)
   setTimeout(() => process.exit(1), 100).unref?.()
 })

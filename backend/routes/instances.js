@@ -281,12 +281,11 @@ function makeAction(action) {
         try { await runCmd('systemctl', [action, `genieacs-${name}-${svc}`], { timeout: 60_000 }) }
         catch (e) { failed.push({ svc, error: (e.stderr || e.message || '').slice(-300) }) }
       }
-      // Multi-proxy perlu di-restart saat start/restart agar routing port
-      // instance ter-refresh (registry/route table di-baca ulang).
-      if (action === 'start' || action === 'restart') {
-        try { await runCmd('systemctl', ['restart', 'genieacs-multi-proxy'], { timeout: 60_000 }) }
-        catch (e) { failed.push({ svc: 'multi-proxy', error: (e.stderr || e.message || '').slice(-300) }) }
-      }
+      // CATATAN: multi-proxy TIDAK lagi di-restart otomatis di sini.
+      // Alasan: restart multi-proxy memutus koneksi panel sendiri (panel
+      // disajikan lewat genieacs-multi-proxy), sehingga frontend bisa
+      // tampak crash padahal proxy sedang restart. Admin harus klik
+      // tombol "Restart Proxy" terpisah saat butuh refresh routing.
 
       audit.record(`instance.${action}`, { name, failed }, req)
       if (failed.length) return res.status(207).json({ message: `Instance ${action} dieksekusi dengan beberapa kegagalan.`, failed })

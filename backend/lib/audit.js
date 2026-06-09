@@ -62,4 +62,23 @@ function record(type, payload = {}, req = null) {
   }
 }
 
-module.exports = { record, clientIp }
+/**
+ * Synchronous audit write — for crash handlers where the process is about to
+ * exit and async stream writes may be lost before flush. Uses appendFileSync
+ * so the event is guaranteed on disk before process.exit().
+ */
+function recordSync(type, payload = {}) {
+  try {
+    const today = new Date().toISOString().slice(0, 10)
+    try { fs.mkdirSync(config.auditLogDir, { recursive: true, mode: 0o750 }) } catch {}
+    const file = path.join(config.auditLogDir, `audit-${today}.log`)
+    const event = { ts: new Date().toISOString(), type, ...payload }
+    delete event.password
+    delete event.token
+    fs.appendFileSync(file, JSON.stringify(event) + '\n', { mode: 0o640 })
+  } catch (e) {
+    try { console.error('[audit] recordSync failed:', e.message, type) } catch {}
+  }
+}
+
+module.exports = { record, recordSync, clientIp }

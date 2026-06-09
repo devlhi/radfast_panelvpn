@@ -142,39 +142,43 @@ function runInteractive(file, args, input = '', timeout = 600_000) {
     let stderr = ''
     let done = false
 
-    const timer = setTimeout(() => {
+    const finish = (err, result) => {
       if (done) return
       done = true
-      child.kill('SIGKILL')
-      const err = new Error(`Command timeout: ${file} ${args.join(' ')}`)
-      err.stdout = stdout.slice(-2000)
-      err.stderr = stderr.slice(-2000)
-      reject(err)
+      clearTimeout(timer)
+      try { child.stdin.destroy() } catch {}
+      if (err) {
+        err.stdout = stdout.slice(-2000)
+        err.stderr = stderr.slice(-2000)
+        return reject(err)
+      }
+      resolve(result)
+    }
+
+    const timer = setTimeout(() => {
+      try { child.kill('SIGKILL') } catch {}
+      finish(new Error(`Command timeout: ${file} ${args.join(' ')}`))
     }, timeout)
 
     child.stdout.on('data', d => { stdout += d.toString() })
     child.stderr.on('data', d => { stderr += d.toString() })
-    child.on('error', err => {
-      if (done) return
-      done = true
-      clearTimeout(timer)
-      err.stdout = stdout.slice(-2000)
-      err.stderr = stderr.slice(-2000)
-      reject(err)
-    })
+    // Attach error handlers to ALL streams to prevent EPIPE crashing the process
+    child.stdout.on('error', () => {})
+    child.stderr.on('error', () => {})
+    child.stdin.on('error', () => {})
+    child.on('error', err => finish(err))
     child.on('close', code => {
-      if (done) return
-      done = true
-      clearTimeout(timer)
-      if (code === 0) return resolve({ stdout, stderr })
-      const err = new Error(`Command failed (${code}): ${file} ${args.join(' ')}`)
-      err.stdout = stdout.slice(-2000)
-      err.stderr = stderr.slice(-2000)
-      reject(err)
+      if (code === 0) return finish(null, { stdout, stderr })
+      finish(new Error(`Command failed (${code}): ${file} ${args.join(' ')}`))
     })
 
-    if (input) child.stdin.write(input)
-    child.stdin.end()
+    // Write input safely — if pipe already closed, error event handler swallows it
+    try {
+      if (input) child.stdin.write(input)
+      child.stdin.end()
+    } catch {
+      // ignore — close/error event will resolve the promise
+    }
   })
 }
 
@@ -242,7 +246,7 @@ router.post(
         if (!fs.existsSync(ACS_ADD_INSTANCE_SCRIPT)) {
           return res.status(500).json({ message: `Script add-instance tidak ditemukan: ${ACS_ADD_INSTANCE_SCRIPT}` })
         }
-        await runInteractive('bash', [ACS_ADD_INSTANCE_SCRIPT, name], 'Y\n')
+        await runInteractive('bash', [ACS_ADD_INSTANCE_SCRIPT, name], 'Y\n', 170_000)
         inst = readRegistry().find(i => i.name === name)
       }
 

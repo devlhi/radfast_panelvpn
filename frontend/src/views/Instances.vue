@@ -445,13 +445,13 @@ async function addInstance() {
   if (!isValidName.value) { addError.value = 'Nama: huruf kecil, angka, strip. Awali dengan huruf.'; return }
   addLoading.value = true
   try {
-    // Hanya kirim name — backend auto-assign port & db, timeout 60s
-    await axios.post('/api/instances', { name: form.value.name }, { timeout: 60000 })
+    // Hanya kirim name — backend auto-assign port & db, timeout 3 menit (proses bisa lama di VPS)
+    await axios.post('/api/instances', { name: form.value.name }, { timeout: 180000 })
     closeAdd()
     await fetchInstances()
   } catch (e) {
     if (e.code === 'ECONNABORTED' || e.message.includes('timeout')) {
-      addError.value = 'Timeout: Proses create instance terlalu lama (VPS lambat).'
+      addError.value = 'Timeout: Proses create instance terlalu lama (>3 menit). Cek di VPS apakah instance sudah terbuat.'
     } else {
       addError.value = e.response?.data?.message || 'Gagal membuat instance.'
     }

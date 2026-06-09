@@ -206,7 +206,7 @@ router.get('/preview', (req, res) => {
 // POST /api/instances — dashboard create. Linux delegates to add-instance.sh.
 router.post(
   '/',
-  body('name').isString().trim().matches(/^[a-z][a-z0-9_-]{1,62}$/),
+  body('name').isString().trim().matches(/^[a-z][a-z0-9_-]{0,62}$/),
   body('ui_port').optional().isInt({ min: 1024, max: 65535 }),
   body('cwmp_port').optional().isInt({ min: 1024, max: 65535 }),
   body('db').optional().isString().trim().matches(/^[a-zA-Z0-9_]{1,64}$/),
@@ -291,13 +291,13 @@ function makeAction(action) {
   }
 }
 
-router.post('/:name/start', param('name').matches(/^[a-z][a-z0-9_-]{1,62}$/), makeAction('start'))
-router.post('/:name/stop', param('name').matches(/^[a-z][a-z0-9_-]{1,62}$/), makeAction('stop'))
+router.post('/:name/start', param('name').matches(/^[a-z][a-z0-9_-]{0,62}$/), makeAction('start'))
+router.post('/:name/stop', param('name').matches(/^[a-z][a-z0-9_-]{0,62}$/), makeAction('stop'))
 
 // DELETE /api/instances/:name. Linux delegates to remove-instance.sh.
 router.delete(
   '/:name',
-  param('name').matches(/^[a-z][a-z0-9_-]{1,62}$/),
+  param('name').matches(/^[a-z][a-z0-9_-]{0,62}$/),
   async (req, res, next) => {
     if (!handleValidation(req, res)) return
     try {

@@ -128,6 +128,18 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   // ───────────────────────────────────────────────────────────────────────
+  // Password management
+  // ───────────────────────────────────────────────────────────────────────
+  async function changePassword({ currentPassword, newPassword, confirmPassword, twofaCode }) {
+    const res = await axios.post('/api/auth/change-password', {
+      currentPassword, newPassword, confirmPassword, twofaCode
+    })
+    // Backend clears cookies + revokes session so we must logout locally
+    _clear()
+    return res.data
+  }
+
+  // ───────────────────────────────────────────────────────────────────────
   // Provisioning API key management
   // ───────────────────────────────────────────────────────────────────────
   async function getProvisioningKey() {
@@ -216,6 +228,7 @@ export const useAuthStore = defineStore('auth', () => {
     // actions
     login, verify2FA, cancelChallenge, logout, restore, installInterceptors,
     setup2FA, enable2FA, disable2FA,
+    changePassword,
     getProvisioningKey, generateProvisioningKey, rotateProvisioningKey, setProvisioningKey,
   }
 })

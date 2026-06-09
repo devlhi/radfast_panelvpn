@@ -12,6 +12,7 @@ const { loginLimiter } = require('../lib/limiters')
 const tokenStore = require('../lib/tokenStore')
 const twofa = require('../lib/twofa')
 const csrf = require('../lib/csrf')
+const envWriter = require('../lib/envWriter')
 
 const router = express.Router()
 
@@ -57,6 +58,17 @@ function getSessionJti(req) {
   } catch (_err) {
     return ''
   }
+}
+
+function validateAdminPassword(pwd) {
+  if (typeof pwd !== 'string') return 'Password baru wajib diisi.'
+  if (pwd.length < 12) return 'Password baru minimal 12 karakter.'
+  if (pwd.length > 256) return 'Password baru maksimal 256 karakter.'
+  if (!/[A-Z]/.test(pwd)) return 'Password baru harus ada huruf besar.'
+  if (!/[a-z]/.test(pwd)) return 'Password baru harus ada huruf kecil.'
+  if (!/[0-9]/.test(pwd)) return 'Password baru harus ada angka.'
+  if (!/[^a-zA-Z0-9]/.test(pwd)) return 'Password baru harus ada simbol.'
+  return null
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -271,6 +283,65 @@ router.post(
     twofa.disable(username)
     audit.record('2fa.disable_success', { username }, req)
     res.json({ ok: true })
+  },
+)
+
+// ═════════════════════════════════════════════════════════════════════════
+// POST /api/auth/change-password — dashboard admin password change
+// ═════════════════════════════════════════════════════════════════════════
+router.post(
+  '/change-password',
+  auth,
+  body('currentPassword').isString().isLength({ min: 1, max: 256 }),
+  body('newPassword').isString().isLength({ min: 12, max: 256 }),
+  body('confirmPassword').isString().isLength({ min: 12, max: 256 }),
+  body('twofaCode').optional({ checkFalsy: true }).isString().isLength({ min: 6, max: 32 }),
+  async (req, res) => {
+    const errors = validationResult(req)
+    if (!errors.isEmpty()) return res.status(400).json({ message: 'Input tidak valid.' })
+
+    const username = req.admin.sub
+    const { currentPassword, newPassword, confirmPassword, twofaCode = '' } = req.body
+
+    const ok = await bcrypt.compare(currentPassword, config.admin.passwordHash)
+    if (!ok) {
+      audit.record('password.change_fail', { username, reason: 'current_password' }, req)
+      return res.status(401).json({ message: 'Password lama salah.' })
+    }
+
+    if (newPassword !== confirmPassword) {
+      return res.status(400).json({ message: 'Konfirmasi password baru tidak cocok.' })
+    }
+    if (newPassword === currentPassword) {
+      return res.status(400).json({ message: 'Password baru harus berbeda dari password lama.' })
+    }
+
+    const pwdErr = validateAdminPassword(newPassword)
+    if (pwdErr) return res.status(400).json({ message: pwdErr })
+
+    if (twofa.isEnabled(username)) {
+      const result = twofa.verifyChallenge(username, twofaCode)
+      if (!result.ok) {
+        audit.record('password.change_fail', { username, reason: '2fa' }, req)
+        return res.status(401).json({ message: 'Kode 2FA salah.' })
+      }
+    }
+
+    try {
+      const nextHash = await bcrypt.hash(newPassword, 12)
+      envWriter.updateEnv({ ADMIN_PASSWORD_HASH: nextHash })
+      config.admin.passwordHash = nextHash
+
+      if (req.admin?.jti && req.admin?.exp) tokenStore.revoke(req.admin.jti, req.admin.exp)
+      res.clearCookie(config.cookieName, { path: '/' })
+      res.clearCookie(csrf.COOKIE_NAME, { path: '/' })
+
+      audit.record('password.change_success', { username }, req)
+      return res.json({ ok: true, message: 'Password berhasil diganti. Silakan login ulang.' })
+    } catch (e) {
+      audit.record('password.change_fail', { username, reason: 'write_env' }, req)
+      return res.status(500).json({ message: e.message || 'Gagal menyimpan password baru.' })
+    }
   },
 )
 

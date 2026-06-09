@@ -5,6 +5,60 @@
       <p>Akun: <strong>{{ auth.username }}</strong></p>
     </header>
 
+    <!-- ═══ Change Password Card ════════════════════════════════════════ -->
+    <section class="rf-card" style="margin-bottom: 24px;">
+      <div class="rf-card-head">
+        <div>
+          <h2>Ganti Password Admin</h2>
+          <p>Update password login dashboard. Wajib login ulang setelah berhasil.</p>
+        </div>
+      </div>
+
+      <div class="rf-card-body">
+        <p class="rf-help">
+          Aturan password: minimal 12 karakter, mengandung huruf besar, huruf kecil, angka, dan simbol.
+        </p>
+
+        <div class="rf-pwd-form">
+          <label class="rf-field">
+            <span>Password lama</span>
+            <input v-model="pwdForm.current" type="password" autocomplete="current-password"
+                   class="rf-input-text" :disabled="pwdBusy" />
+          </label>
+
+          <label class="rf-field">
+            <span>Password baru</span>
+            <input v-model="pwdForm.next" type="password" autocomplete="new-password"
+                   class="rf-input-text" :disabled="pwdBusy" />
+          </label>
+
+          <label class="rf-field">
+            <span>Konfirmasi password baru</span>
+            <input v-model="pwdForm.confirm" type="password" autocomplete="new-password"
+                   class="rf-input-text" :disabled="pwdBusy" />
+          </label>
+
+          <label v-if="auth.admin?.twofaEnabled" class="rf-field">
+            <span>Kode 2FA (6 digit / recovery code)</span>
+            <input v-model="pwdForm.twofa" type="text" maxlength="32"
+                   autocomplete="one-time-code" class="rf-input-text" :disabled="pwdBusy" />
+          </label>
+
+          <div class="rf-actions">
+            <button class="rf-btn rf-btn-primary" @click="submitChangePassword" :disabled="pwdBusy">
+              {{ pwdBusy ? 'Menyimpan…' : 'Ganti password' }}
+            </button>
+            <button class="rf-btn rf-btn-ghost" @click="resetPwdForm" :disabled="pwdBusy">
+              Reset
+            </button>
+          </div>
+
+          <p v-if="pwdError" class="rf-err">{{ pwdError }}</p>
+          <p v-if="pwdSuccess" class="rf-help" style="color:#065f46;">{{ pwdSuccess }}</p>
+        </div>
+      </div>
+    </section>
+
     <!-- ═══ 2FA Card ═════════════════════════════════════════════════════ -->
     <section class="rf-card">
       <div class="rf-card-head">
@@ -172,9 +226,11 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { reactive, ref, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 
+const router = useRouter()
 const auth = useAuthStore()
 
 const busy = ref(false)
@@ -185,6 +241,12 @@ const recoveryCodes = ref([])
 const showDisable = ref(false)
 const disablePass = ref('')
 const disableError = ref('')
+
+// ─── Change password state ───
+const pwdForm = reactive({ current: '', next: '', confirm: '', twofa: '' })
+const pwdBusy = ref(false)
+const pwdError = ref('')
+const pwdSuccess = ref('')
 
 // ─── Provisioning API key state ───
 const keyMeta = ref({
@@ -209,6 +271,50 @@ const newKeyWarning = ref('')
 const copyOk = ref(false)
 
 onMounted(loadKeyMeta)
+
+function resetPwdForm() {
+  pwdForm.current = ''
+  pwdForm.next = ''
+  pwdForm.confirm = ''
+  pwdForm.twofa = ''
+  pwdError.value = ''
+  pwdSuccess.value = ''
+}
+
+async function submitChangePassword() {
+  if (!pwdForm.current || !pwdForm.next || !pwdForm.confirm) {
+    pwdError.value = 'Mohon isi password lama, baru, dan konfirmasi.'
+    return
+  }
+  if (pwdForm.next !== pwdForm.confirm) {
+    pwdError.value = 'Konfirmasi password baru tidak cocok.'
+    return
+  }
+  if (auth.admin?.twofaEnabled && !pwdForm.twofa) {
+    pwdError.value = 'Kode 2FA wajib diisi.'
+    return
+  }
+
+  pwdBusy.value = true
+  pwdError.value = ''
+  pwdSuccess.value = ''
+  try {
+    const res = await auth.changePassword({
+      currentPassword: pwdForm.current,
+      newPassword: pwdForm.next,
+      confirmPassword: pwdForm.confirm,
+      twofaCode: pwdForm.twofa
+    })
+    pwdSuccess.value = res.message || 'Password berhasil diganti. Mengalihkan...'
+    setTimeout(() => {
+      router.push('/login')
+    }, 1500)
+  } catch (e) {
+    pwdError.value = e.response?.data?.message || 'Gagal mengganti password.'
+  } finally {
+    pwdBusy.value = false
+  }
+}
 
 async function loadKeyMeta() {
   try {
@@ -444,6 +550,11 @@ async function confirmDisable() {
   box-shadow: 0 0 0 3px rgba(96,93,255,.12);
 }
 .rf-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+
+.rf-pwd-form { display: flex; flex-direction: column; gap: 14px; }
+.rf-field { display: flex; flex-direction: column; gap: 6px; }
+.rf-field > span { font-size: 12.5px; font-weight: 500; color: var(--text-strong); }
+.rf-field .rf-input-text { max-width: 360px; }
 
 .rf-recovery {
   margin-top: 20px; padding: 16px;

@@ -38,27 +38,27 @@ function clientIp(req) {
  * @param {object} req      express request (optional)
  */
 function record(type, payload = {}, req = null) {
-  const event = {
-    ts: new Date().toISOString(),
-    type,
-    ip: clientIp(req),
-    ua: req?.headers?.['user-agent']?.slice(0, 200) || '',
-    path: req?.originalUrl || '',
-    method: req?.method || '',
-    actor: req?.admin?.username || payload.actor || '',
-    ...payload,
-  }
-  // Never log secrets — strip common ones
-  delete event.password
-  delete event.token
-  delete event.psk
-  delete event.privkey
-
   try {
+    const event = {
+      ts: new Date().toISOString(),
+      type,
+      ip: clientIp(req),
+      ua: req?.headers?.['user-agent']?.slice(0, 200) || '',
+      path: req?.originalUrl || '',
+      method: req?.method || '',
+      actor: req?.admin?.sub || req?.admin?.username || payload.actor || '',
+      ...payload,
+    }
+    // Never log secrets — strip common ones
+    delete event.password
+    delete event.token
+    delete event.psk
+    delete event.privkey
+
     ensureStream().write(JSON.stringify(event) + '\n')
   } catch (e) {
-    // Last-resort console fallback
-    console.error('[audit] write failed:', e.message, event.type)
+    // Audit failures must never break the calling route.
+    try { console.error('[audit] record failed:', e.message, type) } catch {}
   }
 }
 

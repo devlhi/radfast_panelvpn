@@ -91,8 +91,13 @@ function isPortListening(port) {
       const out = runCmdSync('netstat', ['-ano'])
       return new RegExp(`[: ]${port}\\b`).test(out)
     }
-    runCmdSync('ss', ['-ltn', `sport = :${port}`])
-    return true
+    // BUG FIX: `ss` exits 0 even when nothing is listening (it just prints the
+    // header row). Returning true on success made this ALWAYS report "listening"
+    // on Linux, causing nextAvailablePort()'s while-loop to spin forever and
+    // block the event loop. Must inspect the OUTPUT and match the actual port.
+    const out = runCmdSync('ss', ['-ltnH', `sport = :${port}`])
+    // Each line ends with "LOCAL_ADDR:PORT". Match the port at a word boundary.
+    return new RegExp(`:${port}\\b`).test(out)
   } catch {
     return false
   }

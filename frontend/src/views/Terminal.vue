@@ -22,29 +22,32 @@
         <button class="btn-ghost" @click="clearOutput">Clear</button>
       </div>
 
-      <div ref="terminalBox" class="rf-terminal-output">
-        <pre>{{ output }}</pre>
-        <div v-if="running" class="rf-term-running">
-          <span class="rf-spinner"></span>
-          Executing command on VPS…
+      <div class="rf-terminal-container">
+        <div ref="terminalBox" class="rf-terminal-output" @click="focusInput">
+          <pre>{{ output }}</pre>
+          <div v-if="running" class="rf-term-running">
+            <span class="rf-spinner"></span>
+            Executing command on VPS…
+          </div>
         </div>
-      </div>
 
-      <form class="rf-terminal-input" @submit.prevent="runCommand">
-        <span class="rf-term-prompt">vps$</span>
-        <input
-          v-model="command"
-          :disabled="running"
-          autocomplete="off"
-          spellcheck="false"
-          placeholder="ping 10.130.130.1"
-          @keydown.up.prevent="historyBack"
-          @keydown.down.prevent="historyForward"
-        />
-        <button class="btn-primary" :disabled="running || !command.trim()">
-          {{ running ? 'Running…' : 'Run' }}
-        </button>
-      </form>
+        <form class="rf-terminal-input" @submit.prevent="runCommand">
+          <span class="rf-term-prompt">vps$</span>
+          <input
+            ref="inputBox"
+            v-model="command"
+            :disabled="running"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="ping 10.130.130.1"
+            @keydown.up.prevent="historyBack"
+            @keydown.down.prevent="historyForward"
+          />
+          <button class="btn-primary" :disabled="running || !command.trim()">
+            {{ running ? 'Running…' : 'Run' }}
+          </button>
+        </form>
+      </div>
 
       <div class="rf-term-help">
         <strong>Command tersedia:</strong>
@@ -57,22 +60,29 @@
 </template>
 
 <script setup>
-import { nextTick, ref } from 'vue'
+import { nextTick, onMounted, ref } from 'vue'
 import axios from 'axios'
 
 const command = ref('ping 10.130.130.1')
 const output = ref('RadFast VPS Terminal\nType command lalu Enter.\n\n')
 const running = ref(false)
 const terminalBox = ref(null)
+const inputBox = ref(null)
 const history = ref([])
 const historyIndex = ref(-1)
 
 function fillCommand(cmd) {
   command.value = cmd
+  focusInput()
 }
 
 function clearOutput() {
   output.value = 'RadFast VPS Terminal\n\n'
+  focusInput()
+}
+
+function focusInput() {
+  if (inputBox.value) inputBox.value.focus()
 }
 
 function append(text) {
@@ -130,6 +140,10 @@ function historyForward() {
   historyIndex.value -= 1
   command.value = history.value[historyIndex.value]
 }
+
+onMounted(() => {
+  nextTick(focusInput)
+})
 </script>
 
 <style scoped>
@@ -142,15 +156,24 @@ function historyForward() {
 .rf-term-hero h2 { margin: 0; color: var(--text-primary); font-size: 24px; font-weight: 800; }
 .rf-term-hero p { margin: 6px 0 0; color: var(--text-muted); }
 .rf-term-status { display: inline-flex; align-items: center; gap: 8px; color: var(--text-secondary); font-size: 13px; }
-.rf-term-card { overflow: hidden; }
+.rf-term-card { 
+  display: flex; 
+  flex-direction: column; 
+  height: calc(100vh - 180px); /* Fixed height untuk mencegah overflow input tertutup */
+  min-height: 400px;
+}
 .rf-term-toolbar {
   display: flex; flex-wrap: wrap; gap: 8px; padding: 14px;
   border-bottom: 1px solid var(--border);
   background: rgba(255,255,255,.02);
+  flex-shrink: 0;
+}
+.rf-terminal-container {
+  display: flex; flex-direction: column; flex-grow: 1; overflow: hidden;
 }
 .rf-terminal-output {
-  height: min(58vh, 620px);
-  overflow: auto;
+  flex-grow: 1;
+  overflow-y: auto;
   padding: 18px;
   background: #050816;
   border-bottom: 1px solid var(--border);
@@ -168,7 +191,9 @@ function historyForward() {
 .rf-terminal-input {
   display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px;
   padding: 14px;
-  background: rgba(255,255,255,.03);
+  background: rgba(255,255,255,.04);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
 }
 .rf-term-prompt { color: var(--success); font-family: ui-monospace, monospace; font-weight: 800; }
 .rf-terminal-input input {

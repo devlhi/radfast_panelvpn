@@ -13,6 +13,7 @@ const tokenStore = require('../lib/tokenStore')
 const twofa = require('../lib/twofa')
 const csrf = require('../lib/csrf')
 const envWriter = require('../lib/envWriter')
+const secLog = require('../lib/securityLog')
 
 const router = express.Router()
 
@@ -71,6 +72,19 @@ function validateAdminPassword(pwd) {
   return null
 }
 
+function recordAuthReject(req, type, tags = [], extra = {}) {
+  secLog.record(req, {
+    score: extra.score ?? 35,
+    category: extra.category || 'medium',
+    tags: ['admin-panel', 'auth-reject', ...tags],
+  }, {
+    type,
+    status: extra.status || 401,
+    action: 'blocked',
+    blocked: true,
+  })
+}
+
 // ═════════════════════════════════════════════════════════════════════════
 // POST /api/auth/login
 // On success: either issues full session or partial token requesting 2FA.
@@ -84,6 +98,7 @@ router.post(
     const errors = validationResult(req)
     if (!errors.isEmpty()) {
       audit.record('login.invalid_input', {}, req)
+      recordAuthReject(req, 'admin.login.invalid_input', ['invalid-input'], { status: 400, score: 25 })
       return res.status(400).json({ message: 'Username atau password salah.' })
     }
 
@@ -93,6 +108,7 @@ router.post(
     const lockSec = guard.isLocked(ip, username)
     if (lockSec) {
       audit.record('login.locked', { username, retryInSec: lockSec }, req)
+      recordAuthReject(req, 'admin.login.locked', ['lockout', 'bruteforce'], { status: 429, score: 55, category: 'high' })
       return res.status(429).json({
         message: `Terlalu banyak percobaan. Coba lagi dalam ${Math.ceil(lockSec / 60)} menit.`,
       })
@@ -112,6 +128,11 @@ router.post(
       audit.record('login.failure', {
         username, attempts: v.count, locked: !!v.lockedUntil,
       }, req)
+      recordAuthReject(req, 'admin.login.failure', v.lockedUntil ? ['bad-credentials', 'lockout'] : ['bad-credentials'], {
+        status: 401,
+        score: v.lockedUntil ? 55 : 35,
+        category: v.lockedUntil ? 'high' : 'medium',
+      })
       return res.status(401).json({ message: 'Username atau password salah.' })
     }
 
@@ -168,9 +189,11 @@ router.post(
         audience:   config.jwt.audience,
       })
     } catch {
+      recordAuthReject(req, 'admin.2fa.challenge_rejected', ['2fa', 'invalid-challenge'], { status: 401, score: 35 })
       return res.status(401).json({ message: 'Challenge token tidak valid / kadaluarsa.' })
     }
     if (payload.step !== '2fa' || !payload.sub) {
+      recordAuthReject(req, 'admin.2fa.challenge_rejected', ['2fa', 'invalid-challenge'], { status: 401, score: 35 })
       return res.status(401).json({ message: 'Challenge token tidak valid.' })
     }
 
@@ -180,6 +203,7 @@ router.post(
       audit.record('2fa.verify_fail', {
         username: payload.sub, reason: result.reason, attempts: v.count,
       }, req)
+      recordAuthReject(req, 'admin.2fa.verify_fail', ['2fa', 'bad-code'], { status: 401, score: 45 })
       return res.status(401).json({ message: '2FA code salah.' })
     }
 

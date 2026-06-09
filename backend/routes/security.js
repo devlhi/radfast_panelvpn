@@ -99,4 +99,45 @@ router.get('/file/:name', (req, res) => {
   }
 })
 
+// ─── GET /api/security/audit-files ─ daftar file activity/audit log ───────
+router.get('/audit-files', (req, res) => {
+  try {
+    const files = fs.readdirSync(config.auditLogDir)
+      .filter(f => f.startsWith('audit-') && f.endsWith('.log'))
+      .sort().reverse()
+      .map(name => {
+        const full = path.join(config.auditLogDir, name)
+        const st = fs.statSync(full)
+        return { name, sizeBytes: st.size, mtime: st.mtime.toISOString() }
+      })
+    res.json({ files })
+  } catch (e) {
+    res.json({ files: [], error: e.message })
+  }
+})
+
+// ─── GET /api/security/audit-file/:name ─ baca activity/audit log ─────────
+router.get('/audit-file/:name', (req, res) => {
+  const name = String(req.params.name || '')
+  if (!/^audit-\d{4}-\d{2}-\d{2}\.log$/.test(name)) {
+    return res.status(400).json({ message: 'Nama file tidak valid.' })
+  }
+  const full = path.join(config.auditLogDir, name)
+  if (!full.startsWith(config.auditLogDir)) {
+    return res.status(400).json({ message: 'Path tidak valid.' })
+  }
+  if (!fs.existsSync(full)) return res.status(404).json({ message: 'File tidak ada.' })
+
+  const tail = Math.min(parseInt(req.query.tail, 10) || 300, 3000)
+  try {
+    const text = fs.readFileSync(full, 'utf8')
+    const lines = text.split('\n').filter(Boolean).slice(-tail)
+    const events = []
+    for (const l of lines) { try { events.push(JSON.parse(l)) } catch {} }
+    res.json({ name, events: events.reverse() })
+  } catch (e) {
+    res.status(500).json({ message: e.message })
+  }
+})
+
 module.exports = router

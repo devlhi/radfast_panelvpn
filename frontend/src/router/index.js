@@ -16,6 +16,7 @@ const routes = [
       { path: 'terminal', component: () => import('../views/Terminal.vue') },
       { path: 'monitor', component: () => import('../views/Monitor.vue') },
       { path: 'security', component: () => import('../views/SecurityLog.vue') },
+      { path: 'activity-log', component: () => import('../views/ActivityLog.vue') },
       { path: 'settings', component: () => import('../views/Settings.vue') },
       { path: 'api-docs', component: () => import('../views/ApiDocs.vue') },
     ]

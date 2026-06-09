@@ -9,6 +9,19 @@ const path = require('path')
 const fs = require('fs')
 
 const audit = require('./lib/audit')
+
+// ── Catch crashes before process dies ───────────────────────────────────────
+process.on('uncaughtException', err => {
+  audit.record('process.uncaught_exception', { msg: err.message, stack: err.stack })
+  console.error('UNCAUGHT EXCEPTION:', err)
+  process.exit(1)
+})
+process.on('unhandledRejection', reason => {
+  const msg = reason instanceof Error ? reason.message : String(reason)
+  audit.record('process.unhandled_rejection', { msg })
+  console.error('UNHANDLED REJECTION:', reason)
+})
+
 const errors = require('./lib/errors')
 const auth = require('./middleware/auth')
 const csrf = require('./lib/csrf')

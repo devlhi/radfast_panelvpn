@@ -128,11 +128,12 @@ const navSections = [
   {
     label: 'System',
     items: [
-      { path: '/terminal', icon: ico.terminal, label: 'VPS Terminal' },
-      { path: '/monitor',  icon: ico.activity, label: 'Live Monitor' },
-      { path: '/security', icon: ico.shield,   label: 'Security Log' },
-      { path: '/settings', icon: ico.lock,     label: 'Password / 2FA' },
-      { path: '/api-docs', icon: ico.book,     label: 'Dokumentasi API' },
+      { path: '/terminal',     icon: ico.terminal, label: 'VPS Terminal' },
+      { path: '/monitor',      icon: ico.activity, label: 'Live Monitor' },
+      { path: '/security',     icon: ico.shield,   label: 'Security Log' },
+      { path: '/activity-log', icon: ico.activity, label: 'Activity Log' },
+      { path: '/settings',     icon: ico.lock,     label: 'Password / 2FA' },
+      { path: '/api-docs',     icon: ico.book,     label: 'Dokumentasi API' },
     ],
   },
 ]
@@ -142,11 +143,12 @@ const pageMeta = {
   '/instances': 'Instance Manager',
   '/vpn':       'VPN Manager',
   '/api-vpn':   'VPN dari API',
-  '/terminal':  'VPS Terminal',
-  '/monitor':   'System Monitor',
-  '/security':  'Security Log',
-  '/settings':  'Security Settings',
-  '/api-docs':  'Dokumentasi API',
+  '/terminal':     'VPS Terminal',
+  '/monitor':      'System Monitor',
+  '/security':     'Security Log',
+  '/activity-log': 'Activity Log',
+  '/settings':     'Security Settings',
+  '/api-docs':     'Dokumentasi API',
 }
 
 const currentPageTitle = computed(() => pageMeta[route.path] || 'RadFast Admin')

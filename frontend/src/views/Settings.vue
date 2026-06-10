@@ -202,6 +202,26 @@
             <button class="rf-btn rf-btn-ghost" @click="showManual = !showManual" :disabled="keyBusy">
               {{ showManual ? 'Tutup input manual' : 'Set manual' }}
             </button>
+            <button class="rf-btn rf-btn-ghost" @click="syncKey" :disabled="keyBusy || !keyMeta.enabled"
+                    title="Tulis RADFAST_ADMIN_* ke .env semua instance + restart multi-proxy">
+              {{ keyBusy ? 'Menyinkron…' : '🔄 Sync ke instance' }}
+            </button>
+          </div>
+
+          <div v-if="syncResult" class="rf-help" style="margin-top:10px;">
+            <p :style="{ color: syncResult.proxyRestarted ? 'var(--success)' : 'var(--warning)' }">
+              {{ syncResult.message }}
+            </p>
+            <ul v-if="syncResult.results?.length" style="margin:6px 0 0 18px;">
+              <li v-for="r in syncResult.results" :key="r.name">
+                <strong>{{ r.name }}</strong>:
+                <span v-if="r.ok" style="color:var(--success)">OK</span>
+                <span v-else style="color:var(--danger)">{{ r.error || 'gagal' }}</span>
+              </li>
+            </ul>
+            <p v-if="syncResult.proxyError" style="color:var(--danger); margin-top:6px;">
+              Proxy error: {{ syncResult.proxyError }}
+            </p>
           </div>
 
           <div v-if="showManual" class="rf-disable-form" style="max-width:100%;">
@@ -269,6 +289,7 @@ const manualKey = ref('')
 const newKey = ref('')
 const newKeyWarning = ref('')
 const copyOk = ref(false)
+const syncResult = ref(null)
 
 onMounted(loadKeyMeta)
 
@@ -371,6 +392,19 @@ async function saveManualKey() {
     await loadKeyMeta()
   } catch (e) {
     keyError.value = e.response?.data?.message || 'Gagal menyimpan API key.'
+  } finally {
+    keyBusy.value = false
+  }
+}
+
+async function syncKey() {
+  keyBusy.value = true
+  keyError.value = ''
+  syncResult.value = null
+  try {
+    syncResult.value = await auth.syncProvisioningKey()
+  } catch (e) {
+    keyError.value = e.response?.data?.message || 'Gagal sync API key ke instance.'
   } finally {
     keyBusy.value = false
   }

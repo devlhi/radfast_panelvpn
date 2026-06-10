@@ -162,6 +162,11 @@ export const useAuthStore = defineStore('auth', () => {
     return res.data // { ok, mask, updatedAt, expiresAt }
   }
 
+  async function syncProvisioningKey() {
+    const res = await axios.post('/api/auth/provisioning-key/sync')
+    return res.data // { ok, message, results, proxyRestarted, proxyError }
+  }
+
   // ───────────────────────────────────────────────────────────────────────
   // Internals
   // ───────────────────────────────────────────────────────────────────────
@@ -230,5 +235,6 @@ export const useAuthStore = defineStore('auth', () => {
     setup2FA, enable2FA, disable2FA,
     changePassword,
     getProvisioningKey, generateProvisioningKey, rotateProvisioningKey, setProvisioningKey,
+    syncProvisioningKey,
   }
 })

@@ -150,15 +150,26 @@ function toInstanceResponse(inst) {
 
   const env = isWin ? {} : readInstanceEnv(inst.name)
 
+  const nbiProxyPort = env.RADFAST_NBI_PROXY_PORT ? Number.parseInt(env.RADFAST_NBI_PROXY_PORT, 10) : null
+  const nbiGatePath = env.RADFAST_NBI_GATE_PATH || null
+  const uiInternal = env.RADFAST_UI_INTERNAL ? Number.parseInt(env.RADFAST_UI_INTERNAL, 10) : null
+  const ip = inst.ip || null
+  // NBI/API URL harus pakai REST API port (RADFAST_NBI_PROXY_PORT) + secret path,
+  // sama dengan modal GenieACS / Instance Manager. Fallback ke nbi_port internal
+  // hanya kalau proxy port belum diset.
+  const publicNbiPort = nbiProxyPort || nbiPort
+
   return {
     name: inst.name,
     ui_port: inst.ui_port,
     cwmp_port: inst.cwmp_port,
     nbi_port: nbiPort,
     fs_port: fsPort,
-    nbi_proxy_port: env.RADFAST_NBI_PROXY_PORT ? Number.parseInt(env.RADFAST_NBI_PROXY_PORT, 10) : null,
+    nbi_proxy_port: nbiProxyPort,
+    nbi_gate_path: nbiGatePath,
+    ui_internal: uiInternal,
     db: inst.db,
-    ip: inst.ip || null,
+    ip,
     created: inst.created || null,
     active,
     services: {
@@ -166,6 +177,13 @@ function toInstanceResponse(inst) {
       cwmp: `genieacs-${inst.name}-cwmp`,
       nbi: `genieacs-${inst.name}-nbi`,
       fs: `genieacs-${inst.name}-fs`,
+    },
+    urls: {
+      ui: inst.ui_port ? `http://${ip || '<SERVER_IP>'}:${inst.ui_port}` : null,
+      cwmp: inst.cwmp_port ? `http://${ip || '<SERVER_IP>'}:${inst.cwmp_port}` : null,
+      nbi: (publicNbiPort && nbiGatePath)
+        ? `http://${ip || '<SERVER_IP>'}:${publicNbiPort}${nbiGatePath}`
+        : (publicNbiPort ? `http://${ip || '<SERVER_IP>'}:${publicNbiPort}` : null),
     },
   }
 }
@@ -353,21 +371,7 @@ router.post(
         instance = await createLinuxInstance(name)
       }
 
-      const env = isWin ? {} : readInstanceEnv(name)
-      const responseInstance = {
-        ...toInstanceResponse(instance),
-        ui_internal: env.RADFAST_UI_INTERNAL ? Number.parseInt(env.RADFAST_UI_INTERNAL, 10) : null,
-        nbi_gate_path: env.RADFAST_NBI_GATE_PATH || null,
-      }
-      const publicNbiPort = responseInstance.nbi_proxy_port || responseInstance.nbi_port
-      responseInstance.urls = {
-        ui: responseInstance.ui_port ? `http://${responseInstance.ip || '<SERVER_IP>'}:${responseInstance.ui_port}` : null,
-        cwmp: responseInstance.cwmp_port ? `http://${responseInstance.ip || '<SERVER_IP>'}:${responseInstance.cwmp_port}` : null,
-        // NBI/API URL harus mengikuti pola modal GenieACS: REST API port (RADFAST_NBI_PROXY_PORT) + secret path.
-        nbi: (publicNbiPort && responseInstance.nbi_gate_path)
-          ? `http://${responseInstance.ip || '<SERVER_IP>'}:${publicNbiPort}${responseInstance.nbi_gate_path}`
-          : (publicNbiPort ? `http://${responseInstance.ip || '<SERVER_IP>'}:${publicNbiPort}` : null),
-      }
+      const responseInstance = toInstanceResponse(instance)
 
       audit.record('provision.instance.create', {
         name,
@@ -445,22 +449,7 @@ router.get(
     const inst = readRegistry().find(i => i.name === name)
     if (!inst) return res.status(404).json({ message: 'Instance tidak ditemukan.' })
 
-    const env = isWin ? {} : readInstanceEnv(name)
-    const base = toInstanceResponse(inst)
-    const nbiGatePath = env.RADFAST_NBI_GATE_PATH || null
-    const publicNbiPort = base.nbi_proxy_port || base.nbi_port
-    res.json({
-      ...base,
-      ui_internal: env.RADFAST_UI_INTERNAL ? Number.parseInt(env.RADFAST_UI_INTERNAL, 10) : null,
-      nbi_gate_path: nbiGatePath,
-      urls: {
-        ui: base.ui_port ? `http://${base.ip || '<SERVER_IP>'}:${base.ui_port}` : null,
-        cwmp: base.cwmp_port ? `http://${base.ip || '<SERVER_IP>'}:${base.cwmp_port}` : null,
-        nbi: (publicNbiPort && nbiGatePath)
-          ? `http://${base.ip || '<SERVER_IP>'}:${publicNbiPort}${nbiGatePath}`
-          : (publicNbiPort ? `http://${base.ip || '<SERVER_IP>'}:${publicNbiPort}` : null),
-      },
-    })
+    res.json(toInstanceResponse(inst))
   },
 )
 

@@ -279,8 +279,42 @@ router.post(
 
       if (!inst) return res.status(500).json({ message: 'Instance dibuat tapi tidak ditemukan di registry.' })
 
+      // Auto-sync env provisioning (RADFAST_ADMIN_*) ke instance baru.
+      // Restart multi-proxy DI-DEFER ke after-response supaya browser dapat
+      // respons dulu sebelum proxy bounce (panel disajikan via multi-proxy).
+      // add-instance.sh juga sudah restart proxy, tapi env baru ditulis SETELAH
+      // script selesai, jadi perlu satu restart lagi agar logo-proxy reload env.
+      let pendingProxyRestart = false
+      if (!isWin) {
+        try {
+          const { autoSyncOnCreate } = require('../lib/provisioningSync')
+          const sync = await autoSyncOnCreate(name)
+          audit.recordSync('instance.create.autosync', {
+            name,
+            env_ok: sync.env?.ok || false,
+            error: sync.env?.error || null,
+          })
+          pendingProxyRestart = !!sync.env?.ok
+        } catch (syncErr) {
+          audit.recordSync('instance.create.autosync_failed', { name, msg: syncErr.message })
+        }
+      }
+
       audit.record('instance.create', { name, source: isWin ? 'legacy-json' : 'radfast_acs' }, req)
       res.status(201).json({ message: 'Instance berhasil dibuat.', ...toResponse(inst) })
+
+      if (pendingProxyRestart) {
+        // Fire-and-forget: jalankan setelah response terkirim ke browser.
+        res.on('finish', async () => {
+          try {
+            const { restartMultiProxy } = require('../lib/provisioningSync')
+            const r = await restartMultiProxy()
+            audit.recordSync('instance.create.autosync_proxy', { name, ok: r.ok, error: r.error || null })
+          } catch (e) {
+            audit.recordSync('instance.create.autosync_proxy_failed', { name, msg: e.message })
+          }
+        })
+      }
     } catch (e) {
       if (!e.status && (e.stderr || e.stdout)) {
         e.status = 500

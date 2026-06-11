@@ -374,10 +374,41 @@ router.post(
         source: isWin ? 'legacy-json' : 'radfast_acs',
       }, req)
 
+      // Auto-sync env provisioning ke instance baru. Restart multi-proxy
+      // di-defer ke after-response supaya client dapat respons dulu sebelum
+      // proxy bounce. Tidak menggagalkan create bila error.
+      let pendingProxyRestart = false
+      if (!isWin) {
+        try {
+          const { autoSyncOnCreate } = require('../lib/provisioningSync')
+          const sync = await autoSyncOnCreate(name)
+          audit.recordSync('provision.instance.autosync', {
+            name,
+            env_ok: sync.env?.ok || false,
+            error: sync.env?.error || null,
+          })
+          pendingProxyRestart = !!sync.env?.ok
+        } catch (syncErr) {
+          audit.recordSync('provision.instance.autosync_failed', { name, msg: syncErr.message })
+        }
+      }
+
       res.status(201).json({
         message: 'Instance berhasil dibuat.',
         instance: responseInstance,
       })
+
+      if (pendingProxyRestart) {
+        res.on('finish', async () => {
+          try {
+            const { restartMultiProxy } = require('../lib/provisioningSync')
+            const r = await restartMultiProxy()
+            audit.recordSync('provision.instance.autosync_proxy', { name, ok: r.ok, error: r.error || null })
+          } catch (e) {
+            audit.recordSync('provision.instance.autosync_proxy_failed', { name, msg: e.message })
+          }
+        })
+      }
     } catch (e) {
       if (!e.status && (e.stderr || e.stdout)) {
         e.status = 500

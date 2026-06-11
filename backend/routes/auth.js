@@ -443,72 +443,30 @@ router.post('/provisioning-key/sync', auth, async (req, res) => {
     return res.status(400).json({ message: 'Sync hanya tersedia di server Linux (VPS).' })
   }
 
-  const apiKey = keyStore.getKey()
-  if (!apiKey) {
+  const { syncAllInstances } = require('../lib/provisioningSync')
+  const result = await syncAllInstances()
+
+  if (result.noKey) {
     return res.status(400).json({ message: 'Belum ada API key. Generate key dulu sebelum sync.' })
   }
-
-  const fs = require('fs')
-  const path = require('path')
-  const { upsertEnv } = require('../lib/envWriter')
-  const { runCmd } = require('../lib/safeShell')
-
-  const ACS_INSTANCES_DIR = process.env.ACS_INSTANCES_DIR || '/opt/genieacs-instances'
-  const adminUrl = (process.env.RADFAST_ADMIN_URL || 'http://127.0.0.1:9000').replace(/\/+$/, '')
-
-  // Enumerasi instance dari subfolder yang punya .env (struktur radfast_acs).
-  let names = []
-  try {
-    names = fs.readdirSync(ACS_INSTANCES_DIR, { withFileTypes: true })
-      .filter(d => d.isDirectory() && /^[a-z][a-z0-9_-]{0,62}$/.test(d.name))
-      .map(d => d.name)
-  } catch (e) {
-    return res.status(500).json({ message: `Gagal membaca direktori instance: ${e.message}` })
+  if (result.error) {
+    return res.status(500).json({ message: result.error })
   }
 
-  const results = []
-  for (const name of names) {
-    const envPath = path.join(ACS_INSTANCES_DIR, name, '.env')
-    try {
-      if (!fs.existsSync(envPath)) { results.push({ name, ok: false, error: '.env tidak ada' }); continue }
-      let env = fs.readFileSync(envPath, 'utf8')
-      env = upsertEnv(env, 'RADFAST_ADMIN_URL', adminUrl)
-      env = upsertEnv(env, 'RADFAST_ADMIN_API_KEY', apiKey)
-      env = upsertEnv(env, 'RADFAST_INSTANCE_NAME', name)
-      const tmp = envPath + `.tmp-${process.pid}-${Date.now()}`
-      fs.writeFileSync(tmp, env, { mode: 0o600 })
-      fs.renameSync(tmp, envPath)
-      results.push({ name, ok: true })
-    } catch (e) {
-      results.push({ name, ok: false, error: (e.message || '').slice(-200) })
-    }
-  }
-
-  // Restart multi-proxy supaya logo-proxy reload env per instance.
-  let proxyRestarted = false
-  let proxyError = null
-  try {
-    await runCmd('systemctl', ['restart', 'genieacs-multi-proxy'], { timeout: 60_000 })
-    proxyRestarted = true
-  } catch (e) {
-    proxyError = (e.stderr || e.message || '').slice(-300)
-  }
-
-  const okCount = results.filter(r => r.ok).length
   audit.record('provision.key_synced', {
     username: req.admin.sub,
-    total: results.length,
-    ok: okCount,
-    proxyRestarted,
+    total: result.total,
+    ok: result.okCount,
+    proxyRestarted: result.proxy.ok,
   }, req)
 
   res.json({
     ok: true,
-    message: `API key disinkron ke ${okCount}/${results.length} instance.` +
-      (proxyRestarted ? ' Multi-proxy di-restart.' : ' Multi-proxy GAGAL restart — restart manual.'),
-    results,
-    proxyRestarted,
-    proxyError,
+    message: `API key disinkron ke ${result.okCount}/${result.total} instance.` +
+      (result.proxy.ok ? ' Multi-proxy di-restart.' : ' Multi-proxy GAGAL restart — restart manual.'),
+    results: result.results,
+    proxyRestarted: result.proxy.ok,
+    proxyError: result.proxy.error || null,
   })
 })
 

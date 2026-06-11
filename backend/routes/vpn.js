@@ -599,14 +599,14 @@ function createL2tpUser(opts) {
     }
   }
 
-  // ── IP statis VPN deterministik (wajib bila ada subnet ONT utk routing) ─
+  // ── IP statis VPN deterministik — selalu di-assign (mirror perilaku WG).
+  // Pool memakai l2tp-config.json bila ada, fallback ke l2tpPoolDefaults().
+  // Kalau pool penuh dan user TIDAK butuh routing ONT, lanjut tanpa IP statis
+  // (xl2tpd akan kasih IP dinamis). Pool penuh + butuh routing → 409.
   const l2tpCfg = fs.existsSync(L2TP_CFG_FILE) ? (readJSON(L2TP_CFG_FILE) || {}) : {}
-  let vpnIp = null
-  if (lanSubnet) {
-    vpnIp = assignL2tpStaticIp(users, l2tpCfg)
-    if (!vpnIp) {
-      return { status: 409, body: { message: 'Pool IP L2TP penuh, tidak bisa assign IP statis untuk routing ONT.' } }
-    }
+  let vpnIp = assignL2tpStaticIp(users, l2tpCfg)
+  if (!vpnIp && lanSubnet) {
+    return { status: 409, body: { message: 'Pool IP L2TP penuh, tidak bisa assign IP statis untuk routing ONT.' } }
   }
 
   const source = opts.source === 'api' ? 'api' : 'dashboard'
@@ -642,6 +642,17 @@ function createL2tpUser(opts) {
     if (opts.rate_down || opts.rate_up) {
       writePppIpUpScript()
     }
+  }
+
+  // Daftarkan ke tabel Static Route bila akun dibuat dengan subnet ONT.
+  if (lanSubnet) {
+    syncAccountStaticRoute({
+      source: 'l2tp',
+      accountName: username,
+      gateway: vpnIp || null,
+      lanSubnet,
+      note: `L2TP ${username}`,
+    })
   }
 
   return {
@@ -699,6 +710,8 @@ router.delete(
       if (removed && removed.lan_subnet) removeL2tpOntRoute(removed.lan_subnet)
       syncL2tpRouteMap()
     }
+    // Hapus entry auto di tabel Static Route milik akun ini.
+    syncAccountStaticRoute({ source: 'l2tp', accountName: name, gateway: null, lanSubnet: null })
     audit.record('vpn.l2tp.user_delete', { username: name }, req)
     res.json({ message: 'User dihapus.' })
   },
@@ -1311,6 +1324,17 @@ async function createWgPeer(opts) {
     } catch (e) { console.error('wg set:', e.message) }
   }
 
+  // Daftarkan ke tabel Static Route bila peer dibuat dengan subnet ONT.
+  if (lanSubnet) {
+    syncAccountStaticRoute({
+      source: 'wireguard',
+      accountName: name,
+      gateway: peerIP || null,
+      lanSubnet,
+      note: `WG ${name}`,
+    })
+  }
+
   // Strip privkey from response — admin can fetch it via /secret endpoint.
   return {
     status: 201,
@@ -1364,6 +1388,8 @@ router.delete(
     }
 
     writeJSON(WG_PEERS_FILE, peers.filter(p => p.name !== name))
+    // Hapus entry auto di tabel Static Route milik peer ini.
+    syncAccountStaticRoute({ source: 'wireguard', accountName: name, gateway: null, lanSubnet: null })
     audit.record('vpn.wg.peer_delete', { name }, req)
     res.json({ message: 'Peer dihapus.' })
   },
@@ -1904,6 +1930,15 @@ function updateL2tpRoute(opts) {
     if (lanSubnet) applyL2tpOntRoute(username, lanSubnet)
   }
 
+  // Sinkronkan ke tabel Static Route panel admin (tampil di tab Static Route).
+  syncAccountStaticRoute({
+    source: 'l2tp',
+    accountName: username,
+    gateway: u.vpn_ip || null,
+    lanSubnet,
+    note: u.note ? `L2TP ${username}` : null,
+  })
+
   return {
     status: 200,
     body: { message: 'Static route diperbarui.', username, lan_subnet: lanSubnet, ont_ip: ontIp, vpn_ip: u.vpn_ip || null },
@@ -1958,9 +1993,95 @@ function updateWgPeerRoute(opts) {
     }
   }
 
+  // Sinkronkan ke tabel Static Route panel admin (tampil di tab Static Route).
+  syncAccountStaticRoute({
+    source: 'wireguard',
+    accountName: name,
+    gateway: p.peer_ip || null,
+    lanSubnet,
+    note: p.note ? `WG ${name}` : null,
+  })
+
   return {
     status: 200,
     body: { message: 'Static route diperbarui.', name, lan_subnet: lanSubnet, ont_ip: ontIp },
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// AUTO-SYNC ROUTE AKUN → TABEL STATIC ROUTE
+// ════════════════════════════════════════════════════════════════════════
+// Saat route di-set pada akun VPN (lewat panel admin / dashboard GenieACS),
+// daftarkan/hapus entry-nya di static-routes.json supaya muncul di tab
+// "Static Route". Entry bertanda source='l2tp'|'wireguard' + account_name agar
+// bisa dikenali sebagai route yang dikelola otomatis (bukan route manual).
+// Kernel sudah diatur oleh updateL2tpRoute/updateWgPeerRoute, jadi di sini
+// cukup sinkronkan penyimpanan JSON (tidak memanggil ip route lagi).
+function syncAccountStaticRoute({ source, accountName, gateway, lanSubnet, note }) {
+  try {
+    const routes = readStaticRoutes()
+    const idx = routes.findIndex(
+      (r) => r.source === source && r.account_name === accountName,
+    )
+
+    // Tidak ada subnet → hapus entry auto milik akun ini (jika ada).
+    if (!lanSubnet) {
+      if (idx !== -1) {
+        routes.splice(idx, 1)
+        writeJSON(STATIC_ROUTES_FILE, routes)
+      }
+      return
+    }
+
+    // Butuh gateway valid untuk mendaftarkan route.
+    if (!isValidIPv4(gateway)) {
+      // Tanpa gateway (mis. IP VPN belum ke-assign) → jangan daftarkan.
+      if (idx !== -1) {
+        routes.splice(idx, 1)
+        writeJSON(STATIC_ROUTES_FILE, routes)
+      }
+      return
+    }
+
+    if (idx !== -1) {
+      // Update entry yang sudah ada.
+      const r = routes[idx]
+      r.subnet = lanSubnet
+      r.gateway = gateway
+      r.gateway_type = 'via'
+      r.enabled = true
+      if (note != null) r.note = safeNote(note)
+    } else {
+      // Cegah bentrok subnet dengan route lain (manual atau akun lain).
+      const clash = routes.find((r) => r.subnet === lanSubnet)
+      if (clash) {
+        // Subnet sudah dikelola entry lain — tandai sebagai milik akun ini
+        // bila belum punya pemilik, agar tidak menduplikasi route kernel.
+        if (!clash.source) {
+          clash.source = source
+          clash.account_name = accountName
+          clash.gateway = gateway
+          clash.gateway_type = 'via'
+          clash.enabled = true
+          writeJSON(STATIC_ROUTES_FILE, routes)
+        }
+        return
+      }
+      routes.push({
+        id: crypto.randomBytes(8).toString('hex'),
+        subnet: lanSubnet,
+        gateway,
+        gateway_type: 'via',
+        note: safeNote(note || `Auto: ${source} ${accountName}`),
+        enabled: true,
+        source,
+        account_name: accountName,
+        created_at: new Date().toISOString(),
+      })
+    }
+    writeJSON(STATIC_ROUTES_FILE, routes)
+  } catch (e) {
+    console.error('[vpn.routes] syncAccountStaticRoute:', e.message)
   }
 }
 

@@ -582,9 +582,10 @@ router.get('/vpn-status', (req, res, next) => {
       return res.status(503).json({ message: 'VPN status belum tersedia.' })
     }
     // Filter per-instance: hanya akun VPN milik instance pemanggil yang dikembalikan.
+    // Terima alias instance_name karena Portal Altel pernah mengirim nama itu.
     // Nama instance divalidasi dengan pola yang sama seperti registry GenieACS.
     let instanceFilter = ''
-    const raw = req.query.instance
+    const raw = req.query.instance || req.query.instance_name
     if (typeof raw === 'string' && raw.trim()) {
       if (!/^[a-zA-Z0-9_-]{1,64}$/.test(raw.trim())) {
         return res.status(400).json({ message: 'Parameter instance tidak valid.' })

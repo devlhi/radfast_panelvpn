@@ -80,6 +80,61 @@ function handleValidation(req, res) {
 
 const safeNote = (s) => String(s || '').slice(0, 200).replace(/[\x00-\x1f\x7f]/g, '')
 
+function wireGuardServerConfig(cfg = {}) {
+  const merged = { ...wireguardPoolDefaults(), ...(cfg || {}) }
+  const host = merged.server_ip || getServerIP()
+  const port = validatePort(merged.port || 51820)
+  return {
+    pubkey: merged.server_pubkey || null,
+    public_key: merged.server_pubkey || null,
+    server_public_key: merged.server_pubkey || null,
+    host,
+    vpn_host: host,
+    endpoint: host,
+    server_ip: host,
+    port,
+    listen_port: port,
+    vpn_ip: merged.server_vpn_ip || wireguardPoolDefaults().server_vpn_ip,
+    subnet: merged.subnet || wireguardPoolDefaults().subnet,
+  }
+}
+
+function wireGuardProvisionPayload(peer, cfg = {}, includeSecret = false) {
+  const server = wireGuardServerConfig(cfg)
+  const allowedIps = peer.lan_subnet ? `${peer.peer_ip}/32,${peer.lan_subnet}` : `${peer.peer_ip}/32`
+  const clientAllowedIps = peer.lan_subnet ? `${server.subnet},${peer.lan_subnet}` : server.subnet
+  const fullPeer = {
+    ...peer,
+    private_key: includeSecret ? peer.privkey : undefined,
+    client_private_key: includeSecret ? peer.privkey : undefined,
+    public_key: peer.pubkey || null,
+    client_public_key: peer.pubkey || null,
+    vpn_ip: peer.peer_ip || null,
+    client_ip: peer.peer_ip ? `${peer.peer_ip}/32` : null,
+    allowed_ips: allowedIps,
+    client_allowed_ips: clientAllowedIps,
+    server_endpoint: server.endpoint,
+    server_port: server.port,
+    server_public_key: server.server_public_key,
+  }
+  if (!includeSecret) fullPeer.privkey = undefined
+
+  return {
+    peer: fullPeer,
+    server,
+    interface: server,
+    host: server.host,
+    vpn_host: server.vpn_host,
+    endpoint: server.endpoint,
+    port: server.port,
+    server_public_key: server.server_public_key,
+    server_pubkey: server.server_public_key,
+    allowed_ips: allowedIps,
+    client_allowed_ips: clientAllowedIps,
+    dns: '1.1.1.1',
+  }
+}
+
 // ─── IP pool helpers ─────────────────────────────────────────────────────
 /** Validasi satu alamat IPv4 (mis. 192.168.42.10). */
 function isValidIPv4(ip) {
@@ -567,15 +622,34 @@ function createL2tpUser(opts) {
       writeJSON(L2TP_USERS_FILE, users)
       if (isLinux) writePppIpUpScript()
     }
+    // Provisioning API (source=api) perlu password agar Portal bisa simpan credential.
+    const includeSecret = opts.source === 'api'
+    const l2tpCfgExisting = fs.existsSync(L2TP_CFG_FILE) ? (readJSON(L2TP_CFG_FILE) || {}) : {}
     return {
       status: 409,
       body: {
         message: `User "${username}" sudah ada.`,
-        user: { ...existing },
+        username: existing.username,
+        password: includeSecret ? existing.password : undefined,
+        secret: includeSecret ? existing.password : undefined,
         vpn_ip: existing.vpn_ip || null,
+        assigned_ip: existing.vpn_ip || null,
         ros_version: existing.ros_version || '7',
         lan_subnet: existing.lan_subnet || null,
+        ont_ip: existing.ont_ip || null,
         source: existing.source || 'api',
+        host: getServerIP(),
+        vpn_host: getServerIP(),
+        server: getServerIP(),
+        server_address: getServerIP(),
+        endpoint: getServerIP(),
+        port: 1701,
+        psk: includeSecret ? (l2tpCfgExisting.psk || null) : undefined,
+        ipsec_psk: includeSecret ? (l2tpCfgExisting.psk || null) : undefined,
+        user: {
+          ...existing,
+          password: includeSecret ? existing.password : undefined,
+        },
       },
     }
   }
@@ -655,9 +729,40 @@ function createL2tpUser(opts) {
     })
   }
 
+  const includeSecretCreate = source === 'api'
   return {
     status: 201,
-    body: { message: `User ${username} ditambahkan.`, vpn_ip: vpnIp, ros_version: rosVersion, lan_subnet: lanSubnet, source },
+    body: {
+      message: `User ${username} ditambahkan.`,
+      username,
+      password: includeSecretCreate ? password : undefined,
+      secret: includeSecretCreate ? password : undefined,
+      vpn_ip: vpnIp,
+      assigned_ip: vpnIp,
+      ros_version: rosVersion,
+      lan_subnet: lanSubnet,
+      ont_ip: ontIp,
+      source,
+      host: getServerIP(),
+      vpn_host: getServerIP(),
+      server: getServerIP(),
+      server_address: getServerIP(),
+      endpoint: getServerIP(),
+      port: 1701,
+      psk: includeSecretCreate ? (l2tpCfg.psk || null) : undefined,
+      ipsec_psk: includeSecretCreate ? (l2tpCfg.psk || null) : undefined,
+      user: {
+        username,
+        password: includeSecretCreate ? password : undefined,
+        secret: includeSecretCreate ? password : undefined,
+        instance: opts.instance || '',
+        ros_version: rosVersion,
+        lan_subnet: lanSubnet,
+        ont_ip: ontIp,
+        vpn_ip: vpnIp,
+        source,
+      },
+    },
   }
 }
 
@@ -1221,11 +1326,12 @@ async function createWgPeer(opts) {
         try { applyPeerTcLimit(existing.peer_ip, rateDown, rateUp) } catch {}
       }
     }
+    const includeSecret = opts.source === 'api'
     return {
       status: 409,
       body: {
         message: 'Nama sudah dipakai.',
-        peer: { ...existing, privkey: undefined },
+        ...wireGuardProvisionPayload(existing, cfg, includeSecret),
       },
     }
   }
@@ -1335,10 +1441,16 @@ async function createWgPeer(opts) {
     })
   }
 
-  // Strip privkey from response — admin can fetch it via /secret endpoint.
+  // Provisioning API (source=api) harus menerima private key + server pubkey
+  // supaya Portal Altel bisa menyimpan konfigurasi WireGuard lengkap.
+  // Dashboard tetap tidak menerima private key dari endpoint create ini.
+  const includeSecret = source === 'api'
   return {
     status: 201,
-    body: { message: `Peer ${name} ditambahkan.`, peer: { ...peer, privkey: undefined } },
+    body: {
+      message: `Peer ${name} ditambahkan.`,
+      ...wireGuardProvisionPayload(peer, cfg, includeSecret),
+    },
   }
 }
 

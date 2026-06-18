@@ -1850,6 +1850,9 @@ function buildOntStatus(instanceFilter) {
   }
 
   // ── L2TP users ──────────────────────────────────────────────────────────
+  const l2tpCfgExisting = fs.existsSync(L2TP_CFG_FILE) ? (readJSON(L2TP_CFG_FILE) || {}) : {}
+  const globalL2tpPsk = l2tpCfgExisting.psk || null
+
   for (const u of readJSON(L2TP_USERS_FILE)) {
     if (filter && (u.instance || '') !== filter) continue
     const connected = activePppUsers.has(u.username)
@@ -1862,6 +1865,8 @@ function buildOntStatus(instanceFilter) {
       lan_subnet: u.lan_subnet || null,
       ont_ip: u.ont_ip || null,
       vpn_ip: u.vpn_ip || null,
+      psk: globalL2tpPsk,
+      ipsec_psk: globalL2tpPsk,
       tunnel: connected ? 'up' : 'down',
       ont_reachable: ping.alive,
       ont_rtt_ms: ping.rtt_ms,

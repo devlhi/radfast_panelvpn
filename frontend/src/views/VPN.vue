@@ -81,6 +81,19 @@
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
               Copy
             </button>
+            <button class="btn-ghost" @click="regenerateL2tpPsk" :disabled="regeneratingPsk" title="Regenerate PSK">
+              <svg v-if="regeneratingPsk" class="rf-spinner" style="width:12px;height:12px;margin:0" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="3" stroke-dasharray="31.4 31.4" stroke-linecap="round"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="1s" repeatCount="indefinite"/></circle></svg>
+              <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M2.13 15.57a10 10 0 1 0 3.8-9.07l-3.3 3.3"/></svg>
+              Regen
+            </button>
+          </div>
+          <div v-else class="rf-key-line" style="color:var(--warning)">
+            <span>⚠️ PSK belum digenerate</span>
+            <button class="btn-ghost" @click="regenerateL2tpPsk" :disabled="regeneratingPsk">
+              <svg v-if="regeneratingPsk" class="rf-spinner" style="width:12px;height:12px;margin:0" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="3" stroke-dasharray="31.4 31.4" stroke-linecap="round"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="1s" repeatCount="indefinite"/></circle></svg>
+              <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M2.13 15.57a10 10 0 1 0 3.8-9.07l-3.3 3.3"/></svg>
+              Generate
+            </button>
           </div>
         </div>
         <div class="rf-section-tool-right">
@@ -1169,6 +1182,7 @@ const loadingL2tp  = ref(true)
 const loadingWg    = ref(true)
 const addLoading   = ref(false)
 const installing   = ref(false)
+const regeneratingPsk = ref(false)
 const addError     = ref('')
 const showPSK      = ref(false)
 const visiblePass  = ref('')
@@ -1343,6 +1357,17 @@ async function installWg() {
     await fetchAll()
   } catch (e) { alert(e.response?.data?.message || 'Gagal install WireGuard') }
   finally { installing.value = false }
+}
+
+async function regenerateL2tpPsk() {
+  if (!confirm('Peringatan: Regenerate PSK akan memutus semua koneksi L2TP existing karena shared secret berubah. Anda harus sinkronisasi ulang PSK di klien MikroTik.\n\nLanjutkan?')) return
+  regeneratingPsk.value = true
+  try {
+    const res = await axios.post('/api/vpn/l2tp/regenerate-psk')
+    alert(`✅ L2TP PSK berhasil diregenerate!\nPSK Baru: ${res.data.psk}`)
+    await fetchAll()
+  } catch (e) { alert(e.response?.data?.message || 'Gagal regenerate PSK') }
+  finally { regeneratingPsk.value = false }
 }
 
 async function addL2tpUser() {

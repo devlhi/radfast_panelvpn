@@ -702,6 +702,22 @@ router.post(
 )
 
 // ═════════════════════════════════════════════════════════════════════════
+// POST /api/provision/vpn/l2tp/regenerate-psk
+// ═════════════════════════════════════════════════════════════════════════
+router.post('/vpn/l2tp/regenerate-psk', (req, res, next) => {
+  try {
+    const vpnRouter = require('./vpn')
+    if (typeof vpnRouter._regeneratePsk !== 'function') {
+      return res.status(503).json({ message: 'VPN provisioning belum tersedia.' })
+    }
+    const result = vpnRouter._regeneratePsk(req)
+    res.status(result.status || 200).json(result.body || result)
+  } catch (e) {
+    next(e)
+  }
+})
+
+// ═════════════════════════════════════════════════════════════════════════
 // POST /api/provision/vpn/wireguard — buat peer WireGuard via API (S2S)
 // Auth = X-API-Key (provisioningAuth).
 // ═════════════════════════════════════════════════════════════════════════

@@ -484,6 +484,30 @@ router.post(
   },
 )
 
+// ═════════════════════════════════════════════════════════════════════════
+// POST /api/vpn/l2tp/regenerate-psk — Generate ulang global PSK L2TP
+// ═════════════════════════════════════════════════════════════════════════
+router.post('/l2tp/regenerate-psk', (req, res) => {
+  if (isWin) return res.status(400).json({ message: 'Hanya bisa di Linux.' })
+
+  const existing = fs.existsSync(L2TP_CFG_FILE) ? (readJSON(L2TP_CFG_FILE) || {}) : {}
+  const nextPsk = randomPSK()
+  const nextCfg = { ...l2tpPoolDefaults(), ...existing, psk: nextPsk }
+
+  writeJSON(L2TP_CFG_FILE, nextCfg)
+
+  try {
+    fs.writeFileSync('/etc/ipsec.secrets', `: PSK "${nextPsk}"\n`, { mode: 0o600 })
+    try { runCmdSync('ipsec', ['rereadsecrets']) } catch {}
+    try { runCmdSync('ipsec', ['reload']) } catch {}
+  } catch (e) {
+    console.error('regenerate-psk:', e.message)
+  }
+
+  audit.record('vpn.l2tp.regenerate_psk', {}, req)
+  res.json({ message: 'L2TP PSK berhasil diregenerate.', psk: nextPsk })
+})
+
 router.get('/l2tp/config', (req, res) => {
   const cfg = fs.existsSync(L2TP_CFG_FILE) ? (readJSON(L2TP_CFG_FILE) || {}) : {}
   const d = l2tpPoolDefaults()
@@ -2483,3 +2507,24 @@ module.exports.createWgPeer = createWgPeer
 // Ekspos core update static route (X-API-Key) — dashboard GenieACS hanya set route.
 module.exports.updateL2tpRoute = updateL2tpRoute
 module.exports.updateWgPeerRoute = updateWgPeerRoute
+
+module.exports._regeneratePsk = function(req) {
+  if (isWin) return { status: 400, body: { message: 'Hanya bisa di Linux.' } }
+
+  const existing = fs.existsSync(L2TP_CFG_FILE) ? (readJSON(L2TP_CFG_FILE) || {}) : {}
+  const nextPsk = randomPSK()
+  const nextCfg = { ...l2tpPoolDefaults(), ...existing, psk: nextPsk }
+
+  writeJSON(L2TP_CFG_FILE, nextCfg)
+
+  try {
+    fs.writeFileSync('/etc/ipsec.secrets', `: PSK "${nextPsk}"\n`, { mode: 0o600 })
+    try { runCmdSync('ipsec', ['rereadsecrets']) } catch {}
+    try { runCmdSync('ipsec', ['reload']) } catch {}
+  } catch (e) {
+    console.error('regenerate-psk:', e.message)
+  }
+
+  audit.record('vpn.l2tp.regenerate_psk', {}, req)
+  return { status: 200, body: { message: 'L2TP PSK berhasil diregenerate.', psk: nextPsk } }
+}

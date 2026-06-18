@@ -484,15 +484,13 @@ router.post(
   },
 )
 
-// ═════════════════════════════════════════════════════════════════════════
-// POST /api/vpn/l2tp/regenerate-psk — Generate ulang global PSK L2TP
-// ═════════════════════════════════════════════════════════════════════════
-router.post('/l2tp/regenerate-psk', (req, res) => {
-  if (isWin) return res.status(400).json({ message: 'Hanya bisa di Linux.' })
+function regenerateL2tpPsk(req) {
+  if (isWin) return { status: 400, body: { message: 'Hanya bisa di Linux.' } }
 
-  const existing = fs.existsSync(L2TP_CFG_FILE) ? (readJSON(L2TP_CFG_FILE) || {}) : {}
+  const rawExisting = fs.existsSync(L2TP_CFG_FILE) ? readJSON(L2TP_CFG_FILE) : {}
+  const existing = rawExisting && !Array.isArray(rawExisting) && typeof rawExisting === 'object' ? rawExisting : {}
   const nextPsk = randomPSK()
-  const nextCfg = { ...l2tpPoolDefaults(), ...existing, psk: nextPsk }
+  const nextCfg = { ...l2tpPoolDefaults(), ...existing, psk: nextPsk, server_ip: getServerIP() }
 
   writeJSON(L2TP_CFG_FILE, nextCfg)
 
@@ -500,12 +498,24 @@ router.post('/l2tp/regenerate-psk', (req, res) => {
     fs.writeFileSync('/etc/ipsec.secrets', `: PSK "${nextPsk}"\n`, { mode: 0o600 })
     try { runCmdSync('ipsec', ['rereadsecrets']) } catch {}
     try { runCmdSync('ipsec', ['reload']) } catch {}
+    try { runCmdSync('systemctl', ['restart', 'strongswan-starter']) } catch {
+      try { runCmdSync('systemctl', ['restart', 'strongswan']) } catch {}
+    }
+    try { runCmdSync('systemctl', ['restart', 'xl2tpd']) } catch {}
   } catch (e) {
     console.error('regenerate-psk:', e.message)
   }
 
   audit.record('vpn.l2tp.regenerate_psk', {}, req)
-  res.json({ message: 'L2TP PSK berhasil diregenerate.', psk: nextPsk })
+  return { status: 200, body: { message: 'L2TP PSK berhasil diregenerate.', psk: nextPsk } }
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// POST /api/vpn/l2tp/regenerate-psk — Generate ulang global PSK L2TP
+// ═════════════════════════════════════════════════════════════════════════
+router.post('/l2tp/regenerate-psk', (req, res) => {
+  const result = regenerateL2tpPsk(req)
+  res.status(result.status).json(result.body)
 })
 
 router.get('/l2tp/config', (req, res) => {
@@ -2507,24 +2517,6 @@ module.exports.createWgPeer = createWgPeer
 // Ekspos core update static route (X-API-Key) — dashboard GenieACS hanya set route.
 module.exports.updateL2tpRoute = updateL2tpRoute
 module.exports.updateWgPeerRoute = updateWgPeerRoute
+module.exports._regeneratePsk = regenerateL2tpPsk
 
-module.exports._regeneratePsk = function(req) {
-  if (isWin) return { status: 400, body: { message: 'Hanya bisa di Linux.' } }
-
-  const existing = fs.existsSync(L2TP_CFG_FILE) ? (readJSON(L2TP_CFG_FILE) || {}) : {}
-  const nextPsk = randomPSK()
-  const nextCfg = { ...l2tpPoolDefaults(), ...existing, psk: nextPsk }
-
-  writeJSON(L2TP_CFG_FILE, nextCfg)
-
-  try {
-    fs.writeFileSync('/etc/ipsec.secrets', `: PSK "${nextPsk}"\n`, { mode: 0o600 })
-    try { runCmdSync('ipsec', ['rereadsecrets']) } catch {}
-    try { runCmdSync('ipsec', ['reload']) } catch {}
-  } catch (e) {
-    console.error('regenerate-psk:', e.message)
-  }
-
-  audit.record('vpn.l2tp.regenerate_psk', {}, req)
-  return { status: 200, body: { message: 'L2TP PSK berhasil diregenerate.', psk: nextPsk } }
-}
+module.exports._regeneratePsk = regenerateL2tpPsk

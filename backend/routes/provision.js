@@ -568,13 +568,15 @@ let _createL2tpUser = null
 let _createWgPeer = null
 let _updateL2tpRoute = null
 let _updateWgPeerRoute = null
+let _syncVpnRoute = null
 try {
   const vpnMod = require('./vpn')
   _createL2tpUser = vpnMod.createL2tpUser || null
   _createWgPeer = vpnMod.createWgPeer || null
   _updateL2tpRoute = vpnMod.updateL2tpRoute || null
   _updateWgPeerRoute = vpnMod.updateWgPeerRoute || null
-} catch (_) { _createL2tpUser = null; _createWgPeer = null; _updateL2tpRoute = null; _updateWgPeerRoute = null }
+  _syncVpnRoute = vpnMod.syncVpnRoute || null
+} catch (_) { _createL2tpUser = null; _createWgPeer = null; _updateL2tpRoute = null; _updateWgPeerRoute = null; _syncVpnRoute = null }
 
 router.get('/vpn-status', (req, res, next) => {
   try {
@@ -639,6 +641,42 @@ router.post(
 
       if (result.status === 200) {
         audit.record('provision.vpn.route_update', {
+          type,
+          name: req.body.name,
+          instance: req.body.instance || '',
+          lan_subnet: result.body.lan_subnet || '',
+        }, req)
+      }
+      res.status(result.status).json(result.body)
+    } catch (e) {
+      next(e)
+    }
+  },
+)
+
+// ═════════════════════════════════════════════════════════════════════════
+// POST /api/provision/vpn/sync-route — pasang ulang route existing ke kernel.
+// Tidak mengubah subnet/IP tersimpan. Aman dipanggil berulang (idempoten).
+// ═════════════════════════════════════════════════════════════════════════
+router.post(
+  '/vpn/sync-route',
+  body('type').isString().isIn(['l2tp', 'wireguard']),
+  body('name').isString().isLength({ min: 1, max: 64 }),
+  body('instance').optional().isString().isLength({ max: 64 }).matches(/^[a-zA-Z0-9_-]*$/),
+  (req, res, next) => {
+    if (!handleValidation(req, res)) return
+    try {
+      if (typeof _syncVpnRoute !== 'function') {
+        return res.status(503).json({ message: 'Sync static route VPN belum tersedia.' })
+      }
+      const type = String(req.body.type || '').trim().toLowerCase()
+      const result = _syncVpnRoute({
+        type,
+        name: req.body.name,
+        instance: req.body.instance,
+      })
+      if (result.status === 200) {
+        audit.record('provision.vpn.route_sync', {
           type,
           name: req.body.name,
           instance: req.body.instance || '',

@@ -69,6 +69,14 @@ function svcRunning(name) {
 
 function randomPSK() { return crypto.randomBytes(16).toString('hex') }
 
+// Ekstrak pesan error perintah OS (wg / ip route) agar UI bisa menampilkan
+// penyebab nyata kegagalan, bukan sekadar "sukses" palsu.
+function commandError(e, fallback) {
+  const msg = (e && (e.stderr || e.message)) || ''
+  const txt = String(msg).trim().replace(/\s+/g, ' ').slice(-300)
+  return `${fallback}${txt ? ': ' + txt : ''}`
+}
+
 function handleValidation(req, res) {
   const errors = validationResult(req)
   if (!errors.isEmpty()) {
@@ -102,7 +110,10 @@ function wireGuardServerConfig(cfg = {}) {
 function wireGuardProvisionPayload(peer, cfg = {}, includeSecret = false) {
   const server = wireGuardServerConfig(cfg)
   const allowedIps = peer.lan_subnet ? `${peer.peer_ip}/32,${peer.lan_subnet}` : `${peer.peer_ip}/32`
-  const clientAllowedIps = peer.lan_subnet ? `${server.subnet},${peer.lan_subnet}` : server.subnet
+  // Client-side AllowedIPs hanya untuk subnet VPN server.
+  // Jangan masukkan lan_subnet milik router karena subnet itu lokal/attached di MikroTik;
+  // kalau dimasukkan, traffic lokal ke ONT bisa salah arah masuk tunnel.
+  const clientAllowedIps = server.subnet
   const fullPeer = {
     ...peer,
     private_key: includeSecret ? peer.privkey : undefined,
@@ -227,12 +238,19 @@ function syncL2tpRouteMap() {
  * Memakai `ip route replace` (idempoten). Argumen sudah tervalidasi.
  */
 function applyL2tpOntRoute(username, lanSubnet) {
-  if (!isLinux || !lanSubnet) return
+  if (!isLinux || !lanSubnet) return null
   const users = readJSON(L2TP_USERS_FILE)
   const u = users.find((x) => x.username === username)
-  if (!u || !u.vpn_ip || !isValidIPv4(u.vpn_ip)) return
+  if (!u || !u.vpn_ip || !isValidIPv4(u.vpn_ip)) {
+    return 'IP VPN statis user belum tersedia.'
+  }
   // Route via IP statis client (gateway = vpn_ip). Akan aktif begitu user connect.
-  try { runCmdSync('ip', ['route', 'replace', lanSubnet, 'via', u.vpn_ip]) } catch {}
+  try {
+    runCmdSync('ip', ['route', 'replace', lanSubnet, 'via', u.vpn_ip])
+    return null
+  } catch (e) {
+    return commandError(e, 'gagal memasang route L2TP')
+  }
 }
 
 /** Hapus static route ke subnet ONT (saat user dihapus / subnet diubah). */
@@ -1541,6 +1559,30 @@ router.delete(
   },
 )
 
+// POST /api/vpn/peers/:name/sync-route — resync manual via session panel admin
+router.post(
+  '/wireguard/peers/:name/sync-route',
+  param('name').isString().matches(/^[a-z][a-z0-9-]{0,40}$/),
+  (req, res) => {
+    if (!handleValidation(req, res)) return
+    const result = syncVpnRoute({ type: 'wireguard', name: req.params.name })
+    if (result.status === 200) audit.record('vpn.wg.route_sync', { name: req.params.name }, req)
+    res.status(result.status).json(result.body)
+  },
+)
+
+// POST /api/vpn/l2tp/users/:username/sync-route — resync manual via session panel admin
+router.post(
+  '/l2tp/users/:username/sync-route',
+  param('username').isString().matches(/^[a-zA-Z0-9_.-]{1,64}$/),
+  (req, res) => {
+    if (!handleValidation(req, res)) return
+    const result = syncVpnRoute({ type: 'l2tp', name: req.params.username })
+    if (result.status === 200) audit.record('vpn.l2tp.route_sync', { username: req.params.username }, req)
+    res.status(result.status).json(result.body)
+  },
+)
+
 // ═════════════════════════════════════════════════════════════════════════
 // WireGuard Speed Limit (tc HTB)
 // ═════════════════════════════════════════════════════════════════════════
@@ -2075,10 +2117,11 @@ function updateL2tpRoute(opts) {
   u.ont_ip = ontIp
   writeJSON(L2TP_USERS_FILE, users)
 
+  let routeError = null
   if (isLinux) {
     syncL2tpRouteMap()
     if (oldSubnet && oldSubnet !== lanSubnet) removeL2tpOntRoute(oldSubnet)
-    if (lanSubnet) applyL2tpOntRoute(username, lanSubnet)
+    if (lanSubnet) routeError = applyL2tpOntRoute(username, lanSubnet)
   }
 
   // Sinkronkan ke tabel Static Route panel admin (tampil di tab Static Route).
@@ -2090,9 +2133,30 @@ function updateL2tpRoute(opts) {
     note: u.note ? `L2TP ${username}` : null,
   })
 
+  if (routeError) {
+    return {
+      status: 500,
+      body: {
+        message: `Data static route tersimpan, tetapi gagal dipasang: ${routeError}`,
+        username,
+        lan_subnet: lanSubnet,
+        ont_ip: ontIp,
+        vpn_ip: u.vpn_ip || null,
+        route_applied: false,
+      },
+    }
+  }
+
   return {
     status: 200,
-    body: { message: 'Static route diperbarui.', username, lan_subnet: lanSubnet, ont_ip: ontIp, vpn_ip: u.vpn_ip || null },
+    body: {
+      message: lanSubnet ? 'Static route tersimpan dan terpasang.' : 'Static route dihapus.',
+      username,
+      lan_subnet: lanSubnet,
+      ont_ip: ontIp,
+      vpn_ip: u.vpn_ip || null,
+      route_applied: !lanSubnet || !isLinux || !routeError,
+    },
   }
 }
 
@@ -2130,17 +2194,26 @@ function updateWgPeerRoute(opts) {
   p.ont_ip = ontIp
   writeJSON(WG_PEERS_FILE, peers)
 
+  let routeError = null
   if (isLinux) {
     // Perbarui AllowedIPs peer di wg0 (peer IP + subnet ONT bila ada).
     try {
       const allowed = lanSubnet ? `${p.peer_ip}/32,${lanSubnet}` : `${p.peer_ip}/32`
       runCmdSync('wg', ['set', 'wg0', 'peer', p.pubkey, 'allowed-ips', allowed])
-    } catch (e) { console.error('wg set allowed-ips:', e.message) }
+    } catch (e) {
+      console.error('wg set allowed-ips:', e.message)
+      routeError = commandError(e, 'gagal set AllowedIPs WireGuard')
+    }
     if (oldSubnet && oldSubnet !== lanSubnet) {
       try { runCmdSync('ip', ['route', 'del', oldSubnet]) } catch {}
     }
-    if (lanSubnet) {
-      try { runCmdSync('ip', ['route', 'replace', lanSubnet, 'dev', 'wg0']) } catch {}
+    if (lanSubnet && !routeError) {
+      try {
+        runCmdSync('ip', ['route', 'replace', lanSubnet, 'dev', 'wg0'])
+      } catch (e) {
+        console.error('ip route replace wg0:', e.message)
+        routeError = commandError(e, 'gagal pasang route WireGuard di OS')
+      }
     }
   }
 
@@ -2153,10 +2226,101 @@ function updateWgPeerRoute(opts) {
     note: p.note ? `WG ${name}` : null,
   })
 
+  if (routeError) {
+    return {
+      status: 500,
+      body: {
+        message: `Data static route tersimpan, tetapi gagal dipasang: ${routeError}`,
+        name,
+        lan_subnet: lanSubnet,
+        ont_ip: ontIp,
+        route_applied: false,
+      },
+    }
+  }
+
   return {
     status: 200,
-    body: { message: 'Static route diperbarui.', name, lan_subnet: lanSubnet, ont_ip: ontIp },
+    body: {
+      message: lanSubnet ? 'Static route tersimpan dan terpasang.' : 'Static route dihapus.',
+      name,
+      lan_subnet: lanSubnet,
+      ont_ip: ontIp,
+      route_applied: !lanSubnet || !isLinux || !routeError,
+    },
   }
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// RE-SYNC STATIC ROUTE — pasang ulang route ke kernel tanpa mengubah data.
+// Dipakai untuk peer lama yang datanya sudah tersimpan tetapi route di OS
+// hilang (restart, wg0 down, atau pemasangan sempat gagal).
+// ════════════════════════════════════════════════════════════════════════
+function syncVpnRoute(opts) {
+  const type = String(opts.type || '').trim().toLowerCase()
+  if (type !== 'l2tp' && type !== 'wireguard') {
+    return { status: 400, body: { message: 'Tipe harus l2tp atau wireguard.' } }
+  }
+  const key = type === 'wireguard' ? String(opts.name || '').trim() : String(opts.username || opts.name || '').trim()
+  const filter = (typeof opts.instance === 'string' && opts.instance.trim()) ? opts.instance.trim() : null
+
+  if (type === 'wireguard') {
+    const peers = readJSON(WG_PEERS_FILE)
+    const p = peers.find((x) => x.name === key)
+    if (!p || (filter && (p.instance || '') !== filter)) {
+      return { status: 404, body: { message: 'Akun tidak ditemukan.' } }
+    }
+    if (!p.lan_subnet) {
+      return { status: 400, body: { message: 'Peer tidak punya static route untuk disinkronkan.' } }
+    }
+    if (!p.pubkey) {
+      return { status: 400, body: { message: 'Peer tidak punya public key WireGuard.' } }
+    }
+
+    let err = null
+    if (isLinux) {
+      // Pakai helper yang sama seperti static-route manual supaya AllowedIPs lain
+      // milik peer ini (route tambahan di tab Static Route) tidak tertimpa.
+      err = syncWgPeerAllowedIPs(p.peer_ip, p.lan_subnet)
+      if (err) {
+        console.error('sync wg allowed-ips:', err)
+        err = `gagal set AllowedIPs WireGuard: ${err}`
+      }
+      if (!err) {
+        try {
+          runCmdSync('ip', ['route', 'replace', p.lan_subnet, 'dev', 'wg0'])
+        } catch (e) {
+          console.error('sync ip route wg0:', e.message)
+          err = commandError(e, 'gagal pasang route WireGuard di OS')
+        }
+      }
+    }
+    if (err) {
+      return { status: 500, body: { message: `Sync static route gagal: ${err}`, name: p.name, lan_subnet: p.lan_subnet, route_applied: false } }
+    }
+    syncAccountStaticRoute({ source: 'wireguard', accountName: p.name, gateway: p.peer_ip || null, lanSubnet: p.lan_subnet, note: p.note ? `WG ${p.name}` : null })
+    return { status: 200, body: { message: 'Static route WireGuard disinkronkan.', name: p.name, lan_subnet: p.lan_subnet, route_applied: true } }
+  }
+
+  // L2TP
+  const users = readJSON(L2TP_USERS_FILE)
+  const u = users.find((x) => x.username === key)
+  if (!u || (filter && (u.instance || '') !== filter)) {
+    return { status: 404, body: { message: 'Akun tidak ditemukan.' } }
+  }
+  if (!u.lan_subnet) {
+    return { status: 400, body: { message: 'User tidak punya static route untuk disinkronkan.' } }
+  }
+  let err = null
+  if (isLinux) {
+    syncL2tpRouteMap()
+    err = applyL2tpOntRoute(u.username, u.lan_subnet)
+  }
+  if (err) {
+    return { status: 500, body: { message: `Sync static route gagal: ${err}`, username: u.username, lan_subnet: u.lan_subnet, route_applied: false } }
+  }
+  syncAccountStaticRoute({ source: 'l2tp', accountName: u.username, gateway: u.vpn_ip || null, lanSubnet: u.lan_subnet, note: u.note ? `L2TP ${u.username}` : null })
+  return { status: 200, body: { message: 'Static route L2TP disinkronkan.', username: u.username, lan_subnet: u.lan_subnet, route_applied: true } }
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -2517,6 +2681,7 @@ module.exports.createWgPeer = createWgPeer
 // Ekspos core update static route (X-API-Key) — dashboard GenieACS hanya set route.
 module.exports.updateL2tpRoute = updateL2tpRoute
 module.exports.updateWgPeerRoute = updateWgPeerRoute
+module.exports.syncVpnRoute = syncVpnRoute
 module.exports._regeneratePsk = regenerateL2tpPsk
 
 module.exports._regeneratePsk = regenerateL2tpPsk

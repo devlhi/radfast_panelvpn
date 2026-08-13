@@ -215,6 +215,11 @@
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/><circle cx="12" cy="12" r="4"/></svg>
                       Limit
                     </button>
+                    <button v-if="user.lan_subnet" class="rf-act rf-act-info" @click="syncStaticRoute(user.username, 'l2tp')" :disabled="syncingRoute === user.username" title="Sync static route ke server">
+                      <svg v-if="syncingRoute === user.username" class="rf-spinner" style="width:11px;height:11px;margin:0;border-width:2px" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="3" stroke-dasharray="31.4 31.4" stroke-linecap="round"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="1s" repeatCount="indefinite"/></circle></svg>
+                      <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                      Sync Static
+                    </button>
                     <button class="rf-act" :class="user.disabled ? 'rf-act-success' : 'rf-act-muted'" :disabled="togglingState === user.username" @click="toggleState(user, 'l2tp')" :title="user.disabled ? 'Aktifkan VPN' : 'Nonaktifkan VPN'">
                       <svg v-if="user.disabled" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
                       <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
@@ -380,6 +385,11 @@
                     <button class="rf-act rf-act-info" @click="openLimitModal(peer)" title="Set Speed Limit">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/><circle cx="12" cy="12" r="4"/></svg>
                       Limit
+                    </button>
+                    <button v-if="peer.lan_subnet" class="rf-act rf-act-info" @click="syncStaticRoute(peer.name, 'wg')" :disabled="syncingRoute === peer.name" title="Sync static route ke server">
+                      <svg v-if="syncingRoute === peer.name" class="rf-spinner" style="width:11px;height:11px;margin:0;border-width:2px" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="3" stroke-dasharray="31.4 31.4" stroke-linecap="round"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="1s" repeatCount="indefinite"/></circle></svg>
+                      <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                      Sync Static
                     </button>
                     <button class="rf-act" :class="peer.disabled ? 'rf-act-success' : 'rf-act-muted'" :disabled="togglingState === peer.name" @click="toggleState(peer, 'wg')" :title="peer.disabled ? 'Aktifkan VPN' : 'Nonaktifkan VPN'">
                       <svg v-if="peer.disabled" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
@@ -1270,6 +1280,7 @@ const editLoading    = ref(false)
 const editError      = ref('')
 const editForm       = ref({ _type: 'wg', name: '', instance: '', note: '', ros_version: '7', lan_subnet: '', ont_ip: '' })
 const togglingState  = ref('')   // name yang sedang di-toggle enable/disable
+const syncingRoute   = ref('')   // name akun yang static route-nya sedang di-sync
 
 // Status VPN ONT (per akun): { l2tp:[...], wireguard:[...] }
 const ontStatus    = ref({ l2tp: [], wireguard: [] })
@@ -1335,6 +1346,20 @@ async function refreshOntStatus() {
     const res = await axios.get('/api/vpn/ont-status')
     ontStatus.value = res.data
   } catch { /* abaikan error transient */ }
+}
+
+// Sync static route existing ke kernel (tanpa mengubah subnet/IP tersimpan).
+async function syncStaticRoute(name, type) {
+  syncingRoute.value = name
+  try {
+    const res = await axios.post(`/api/vpn/${type === 'wg' ? 'wireguard/peers' : 'l2tp/users'}/${encodeURIComponent(name)}/sync-route`)
+    alert(`✅ ${res.data.message || 'Static route disinkronkan.'}`)
+    await fetchAll()
+  } catch (e) {
+    alert(e.response?.data?.message || 'Gagal sync static route.')
+  } finally {
+    syncingRoute.value = ''
+  }
 }
 
 async function installL2tp() {
